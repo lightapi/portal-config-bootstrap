@@ -1,0 +1,48 @@
+[
+  {
+    "id": "10e52889-3828-46a4-883d-dbc61e1c8a89",
+    "data": {
+      "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+      "configId": "01964b05-5533-77d1-85fe-7a3bb4a516f5",
+      "instanceId": "019d2a45-4eb7-7e20-a6b6-9cc3261e89a1",
+      "propertyId": "01965b85-6185-7f06-87a8-a5aa9081a676",
+      "propertyValue": "[\"https://dev.lightapi.net\",\"https://devsignin.lightapi.net\"]",
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-07-09T03:54:34Z",
+    "type": "ConfigInstanceUpdatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "nonce": "7001",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019d2a45-4eb7-7e20-a6b6-9cc3261e89a1|01965b85-6185-7f06-87a8-a5aa9081a676",
+    "specversion": "1.0",
+    "aggregatetype": "ConfigInstance",
+    "datacontenttype": "application/json",
+    "aggregateversion": "2"
+  },
+  {
+    "id": "c556689c-3a18-49d4-896e-0cd346befb1b",
+    "data": {
+      "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+      "configId": "2678d1bb-07df-5aae-8000-d801fd146706",
+      "instanceId": "019d2a45-4eb7-7e20-a6b6-9cc3261e89a1",
+      "propertyId": "3b6e0fc3-a99e-50a2-afa3-92d321277948",
+      "propertyValue": "[{\"domain\":\"dev.lightapi.net\",\"path\":\"/\",\"base\":\"/lightapi/dist\",\"transferMinSize\":10245760,\"directoryListingEnabled\":false},{\"domain\":\"devsignin.lightapi.net\",\"path\":\"/\",\"base\":\"/signin/dist\",\"transferMinSize\":10245760,\"directoryListingEnabled\":false}]",
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-07-09T03:54:34Z",
+    "type": "ConfigInstanceUpdatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "nonce": "7002",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019d2a45-4eb7-7e20-a6b6-9cc3261e89a1|3b6e0fc3-a99e-50a2-afa3-92d321277948",
+    "specversion": "1.0",
+    "aggregatetype": "ConfigInstance",
+    "datacontenttype": "application/json",
+    "aggregateversion": "2"
+  }
+]

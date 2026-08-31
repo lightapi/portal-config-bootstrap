@@ -1,0 +1,14 @@
+# Default configuration values for config-server
+db_url: "postgres://portal_dev_runtime:secret@postgres:5432/configserver"
+server_ip: "0.0.0.0"
+server_port: 8435
+server_http_port: 8080
+server_enable_http: false
+server_enable_https: true
+host_id: "01964b05-552a-7c4b-9184-6857e7f3dc5f"
+jwks_url: "https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys"
+jwks_accept_invalid_certs: true
+jwt_expected_issuer: "urn:com:networknt:oauth2:v1"
+jwt_expected_audience: "urn:com.networknt"
+tls_cert_path: "cert.pem"
+tls_key_path: "key.pem"

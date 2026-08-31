@@ -1,0 +1,9 @@
+# These immutable deltas are retained for checksum compatibility on preserved databases.
+# Fresh databases skip them and apply their later replacement delta instead.
+# Replacement 20260807-001 requires baseline release 2.3.5-dev.20260807.1816
+# or later, which contains both target ConfigInstance aggregates at version 1.
+20260709-001-dev-gateway-host-overrides
+# Replacement 20260807-002 requires baseline release 2.3.5-dev.20260807.1816
+# or later, which contains all three target ConfigInstance aggregates at version 1.
+# Its cookie-domain update is intentionally a no-op so it reproduces the full old delta.
+20260710-001-dev-bff-stateless-auth

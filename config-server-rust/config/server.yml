@@ -1,0 +1,15 @@
+# Server configuration
+dbUrl: ${db_url}
+ip: ${server_ip:0.0.0.0}
+port: ${server_port}
+httpPort: ${server_http_port:8080}
+enableHttp: ${server_enable_http:false}
+httpsPort: ${server_port}
+enableHttps: ${server_enable_https:true}
+hostId: ${host_id}
+jwksUrl: ${jwks_url}
+jwksAcceptInvalidCerts: ${jwks_accept_invalid_certs}
+jwtExpectedIssuer: ${jwt_expected_issuer}
+jwtExpectedAudience: ${jwt_expected_audience}
+tlsCertPath: ${tls_cert_path}
+tlsKeyPath: ${tls_key_path}

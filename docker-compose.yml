@@ -1,0 +1,683 @@
+---
+# Start the Rust-based dev stack with:
+#   docker compose up -d
+#
+# Service names stay stable so downstream configuration does not need to change.
+services:
+
+  postgres:
+    # image: timescale/timescaledb:latest-pg18
+    image: timescale/timescaledb:latest-pg17
+    # image: postgres:17.2
+    volumes:
+      # - ./postgres-db/pgdata:/var/lib/postgresql/pgdata
+      - ./postgres-db/data:/var/lib/postgresql/data
+      - ./postgres-db/init-environment.sh:/docker-entrypoint-initdb.d/00-init-environment.sh:ro
+      - ./postgres-db/lib:/docker-entrypoint-initdb.d/lib:ro
+      - ./postgres-db/init.sql:/docker-entrypoint-initdb.d/schema-source/configserver.sql:ro
+      - ./postgres-db/knowledge:/docker-entrypoint-initdb.d/schema-source/knowledge:ro
+      - ./postgres-db/zzz-local-knowledge-runtime.sql:/docker-entrypoint-initdb.d/schema-source/runtime-grants.sql:ro
+    environment:
+      POSTGRES_PASSWORD: secret
+      PORTAL_DB_TOPOLOGY: separate
+      PORTAL_DB_NAME: configserver
+      PORTAL_DB_KNOWLEDGE_NAME: knowledge
+      PORTAL_DB_OPERATIONAL_NAME: operations
+    command: postgres -c wal_level=logical -c max_replication_slots=10 -c max_wal_senders=10
+    ports:
+      - 5432:5432
+    hostname: postgres
+    container_name: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  knowledge-schema-migration:
+    image: timescale/timescaledb:latest-pg17
+    entrypoint: ["/bin/sh", "-ec", "/bin/bash /docker-entrypoint-initdb.d/validate-environment.sh && psql -v ON_ERROR_STOP=1 -U postgres -d postgres -v database_user=postgres -v configserver_database=configserver -v knowledge_database=knowledge -v configserver_schema=configserver -v knowledge_schema=knowledge -f /docker-entrypoint-initdb.d/zzz-local-knowledge-runtime.sql"]
+    volumes:
+      - ./postgres-db/validate-environment.sh:/docker-entrypoint-initdb.d/validate-environment.sh:ro
+      - ./postgres-db/knowledge:/docker-entrypoint-initdb.d/knowledge:ro
+      - ./postgres-db/zzz-local-knowledge-runtime.sql:/docker-entrypoint-initdb.d/zzz-local-knowledge-runtime.sql:ro
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: postgres
+      PGPASSWORD: secret
+      PORTAL_DB_TOPOLOGY: separate
+      PORTAL_DB_NAME: configserver
+      PORTAL_DB_KNOWLEDGE_NAME: knowledge
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  operational-store-bootstrap:
+    image: timescale/timescaledb:latest-pg17
+    user: "0:0"
+    entrypoint: ["/bin/bash", "/opt/operational-store/bin/bootstrap-operational-store.sh"]
+    volumes:
+      - ./postgres-db/operations/bin:/opt/operational-store/bin:ro
+      - ./postgres-db/operations/bundle:/opt/operational-store/bundle:ro
+      - ./postgres-db/secrets/operational-database-url:/run/secrets/operational-database-url:ro
+      - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
+      - ./postgres-db/secrets/execution-database-url:/run/secrets/execution-database-url:ro
+      - ./postgres-db/secrets/workflow-database-url:/run/secrets/workflow-database-url:ro
+      - ./postgres-db/secrets/a2a-database-url:/run/secrets/a2a-database-url:ro
+      - ./postgres-db/secrets/gateway-database-url:/run/secrets/gateway-database-url:ro
+      - ./postgres-db/secrets/audit-database-url:/run/secrets/audit-database-url:ro
+      - ./postgres-db/secrets/artifact-database-url:/run/secrets/artifact-database-url:ro
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: postgres
+      PGPASSWORD: secret
+      PORTAL_DB_OPERATIONAL_NAME: operations
+      OPERATIONAL_BINDING_ID: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
+      OPERATIONAL_BINDING_DIGEST: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+      OPERATIONAL_SCOPE_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
+      OPERATIONAL_HOST_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
+      OPERATIONAL_ENVIRONMENT: dev
+      OPERATIONAL_DEPLOYMENT_PROFILE: DEV_DEDICATED
+      OPERATIONAL_CONTRACT_GENERATION: 1
+      OPERATIONAL_BUNDLE_VERSION: 1.4.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  operational-schema-validation:
+    image: timescale/timescaledb:latest-pg17
+    entrypoint: ["/bin/bash", "/opt/operational-store/bin/validate-phase6-gateway-evidence-authority.sh"]
+    volumes:
+      - ./postgres-db/operations/bin:/opt/operational-store/bin:ro
+      - ./postgres-db/operations/bundle:/opt/operational-store/bundle:ro
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: postgres
+      PGPASSWORD: secret
+      PORTAL_DB_OPERATIONAL_NAME: operations
+      OPERATIONAL_BINDING_ID: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
+      OPERATIONAL_BINDING_DIGEST: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+      OPERATIONAL_SCOPE_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
+      OPERATIONAL_HOST_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
+      OPERATIONAL_ENVIRONMENT: dev
+      OPERATIONAL_CONTRACT_GENERATION: 1
+      PORTAL_DB_NAME: configserver
+      PORTAL_DB_CONFIGSERVER_SCHEMA: public
+      CONFIGSERVER_RUNTIME_ROLE: portal_dev_runtime
+    depends_on:
+      operational-store-bootstrap:
+        condition: service_completed_successfully
+    restart: "no"
+
+  hybrid-command:
+    image: ${PORTAL_HYBRID_COMMAND_IMAGE:-networknt/portal-hybrid-command:2.2.1}
+    environment:
+      NOREPLAY_EMAIL_PASSWORD: ${NOREPLAY_EMAIL_PASSWORD}
+      INSTANCE_CLONE_PLAN_HMAC_KEY: ${INSTANCE_CLONE_PLAN_HMAC_KEY:-light-portal-development-only-instance-clone-hmac-key-v1}
+      INSTANCE_CLONE_PLAN_HMAC_KEY_ID: ${INSTANCE_CLONE_PLAN_HMAC_KEY_ID:-v1}
+      WORKFLOW_TOOL_ACCESS_APPROVAL_WF_DEF_ID: 01a012f0-3ccb-792c-9aba-752269ec0b29
+      WORKFLOW_TOOL_ACCESS_APPROVAL_VERSION: 1.0.0
+      WORKFLOW_TOOL_ACCESS_APPROVAL_DIGEST: sha256:29167fa1e53a00187685c8d459016fefbf69567dd974fc3a90d0d619ca3a887a
+      KNOWLEDGE_WORKLOAD_PRINCIPALS: ${KNOWLEDGE_WORKLOAD_PRINCIPALS:-light-knowledge-worker,light-knowledge}
+      # The following environment varialbe will enable the debug in the container.
+      # JAVA_TOOL_OPTIONS: '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005'
+    volumes:
+      - ./hybrid-command/config:/config
+      - ./hybrid-command/service:/service
+      - ${PORTAL_DATA_DIR:-./data}:/data
+    ports:
+      - 8439:8439
+      # The debug port
+      # - 5005:5005
+    # restart: on-failure
+    hostname: hybrid-command
+    container_name: hybrid-command
+    depends_on:
+      postgres:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+
+  hybrid-query:
+    image: ${PORTAL_HYBRID_QUERY_IMAGE:-networknt/portal-hybrid-query:2.2.1}
+    volumes:
+      - ./hybrid-query/node1:/config
+      - ./hybrid-query/service:/service
+      - ${PORTAL_DATA_DIR:-./data}:/data
+    ports:
+      - 8440:8440
+    # restart: on-failure
+    environment:
+      LIGHT_KNOWLEDGE_CONTROL_SNAPSHOT_SIGNING_KEY: ${LIGHT_KNOWLEDGE_CONTROL_SNAPSHOT_SIGNING_KEY:-local-control-snapshot-signing-key-0123456789abcdef}
+      INSTANCE_CLONE_PLAN_HMAC_KEY: ${INSTANCE_CLONE_PLAN_HMAC_KEY:-light-portal-development-only-instance-clone-hmac-key-v1}
+      INSTANCE_CLONE_PLAN_HMAC_KEY_ID: ${INSTANCE_CLONE_PLAN_HMAC_KEY_ID:-v1}
+      embedding-task.enabled: ${EMBEDDING_TASK_ENABLED:-false}
+      embedding-task.provider: ${EMBEDDING_TASK_PROVIDER:-disabled}
+      embedding-task.endpoint: ${EMBEDDING_TASK_ENDPOINT:-https://generativelanguage.googleapis.com/v1beta/openai/embeddings}
+      embedding-task.model: ${EMBEDDING_TASK_MODEL:-gemini-embedding-001}
+      embedding-task.dimension: ${EMBEDDING_TASK_DIMENSION:-384}
+      embedding-task.apiKey: ${GEMINI_API_KEY:-}
+      JAVA_TOOL_OPTIONS: "-Djdk.internal.httpclient.disableHostnameVerification=true"
+      LIGHT_WORKFLOW_RULE_TEST_URL: "http://light-workflow:8436/rule/test"
+    hostname: hybrid-query
+    container_name: hybrid-query
+    depends_on:
+      postgres:
+        condition: service_healthy
+      config-server:
+        condition: service_started
+
+  controller:
+    image: networknt/controller-rs:latest
+    volumes:
+      - ./light-controller-rust:/keystore:ro
+      - ./postgres-db/secrets/execution-database-url:/run/secrets/execution-database-url:ro
+    environment:
+      CONTROLLER_ADDR: "[::]:8438"
+      CONTROLLER_HOST_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
+      CONTROLLER_USER_ID: 01964b05-5532-7c79-8cde-191dcbd421b8
+      CONTROLLER_TLS_CERT_PATH: /keystore/server.pem
+      CONTROLLER_TLS_KEY_PATH: /keystore/server.key
+      CONTROLLER_TLS_TRUST_CERT_PATH: /keystore/server.pem
+      DATABASE_URL: postgres://portal_dev_runtime:secret@postgres:5432/configserver
+      DATABASE_MAXIMUM_POOL_SIZE: 3
+      CONTROLLER_EXECUTION_DATABASE_URL_FILE: /run/secrets/execution-database-url
+      CONTROLLER_EXECUTION_DATABASE_MAXIMUM_POOL_SIZE: 5
+      CONTROLLER_EXECUTION_BINDING_ID: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
+      CONTROLLER_EXECUTION_BINDING_DIGEST: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+      CONTROLLER_EXECUTION_ENVIRONMENT: dev
+      CONTROLLER_EXECUTION_MINIMUM_SCHEMA_GENERATION: 1
+      CONTROLLER_EXECUTION_REQUIRED_SCOPE: execution.invoke
+      CONTROLLER_RUNNER_ENABLED: "${CONTROLLER_RUNNER_ENABLED:-false}"
+      MICROSERVICE_JWKS_URL: https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys
+      MICROSERVICE_JWKS_VERIFY_HOSTNAME: "false"
+      MICROSERVICE_JWT_AUDIENCE: urn:com.networknt
+      RUST_LOG: "${RUST_LOG:-warn}"
+      CONTROLLER_LOG_ANSI: "false"
+    hostname: controller
+    container_name: controller
+    depends_on:
+      postgres:
+        condition: service_healthy
+      operational-schema-validation:
+        condition: service_completed_successfully
+      light-oauth:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -g -k -f https://[::1]:8438/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  light-oauth:
+    image: ${LIGHT_OAUTH_IMAGE:-networknt/light-oauth:2.2.1}
+    ports:
+      - 6881:6881
+      # - 5005:5005
+    volumes:
+      - ./light-oauth-rust/config:/config
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      # The following environment variable will enable the debug in the container.
+      RUST_LOG: "${RUST_LOG:-warn}"
+      OAUTH_LOG_ANSI: "false"
+    # restart: on-failure
+    hostname: light-oauth
+    container_name: light-oauth
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'GET /oauth2/AZZRJE52eXu3t1hseacnGQ/keys HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' | timeout 5 openssl s_client -connect localhost:6881 -servername localhost -quiet 2>/dev/null | grep -q 'HTTP/1.1 200 OK'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  config-server:
+    image: ${CONFIG_SERVER_IMAGE:-networknt/config-server:2.2.1}
+    ports:
+      - 8435:8435
+    volumes:
+      - ./config-server-rust/config:/config
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      # The following environment variable will enable the debug in the container.
+      RUST_LOG: "${RUST_LOG:-warn}"
+      CONFIG_LOG_ANSI: "false"
+    # restart: on-failure
+    hostname: config-server
+    container_name: config-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+      controller:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "printf Q | openssl s_client -connect localhost:8435 -servername localhost >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  portal-service:
+    image: ${PORTAL_SERVICE_IMAGE:-networknt/portal-service:2.2.1}
+    ports:
+      - 2498:2498
+    volumes:
+      - ./portal-service-rust/config:/config
+      - ${PORTAL_DATA_DIR:-./data}:/data
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      # The following environment variable will enable the debug in the container.
+      RUST_LOG: "${RUST_LOG:-warn}"
+      PORTAL_LOG_ANSI: "false"
+    # restart: on-failure
+    hostname: portal-service
+    container_name: portal-service
+    networks:
+      default:
+        aliases:
+          - reference
+    depends_on:
+      postgres:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  light-workflow:
+    image: ${LIGHT_WORKFLOW_IMAGE:-networknt/light-workflow:2.3.5}
+    ports:
+      - 8436:8436
+    env_file:
+      - ./light-workflow-rust/config/light-workflow.env
+    volumes:
+      - ./light-gateway-rust/config/ca.pem:/config/ca.pem:ro
+      - ./light-workflow-rust/config/startup.yml:/config/startup.yml:ro
+      - ./postgres-db/secrets/workflow-database-url:/run/secrets/operational-database-url:ro
+      - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
+      - light-workflow-config-cache:/app/config-cache
+    environment:
+      workflow.a2a.authorizationContextKeyFile: /run/secrets/a2a-authorized-context-key
+      WORKFLOW_IGNORE_USER_JWT_EXPIRY: "true"
+      server.enableRegistry: "true"
+      server.startOnRegistryFailure: "false"
+      portalRegistry.portalUrl: "https://controller:8438"
+      server.advertisedAddress: "light-workflow"
+      LIGHT_PORTAL_AUTHORIZATION: "${LIGHT_WORKFLOW_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxYTAxMWQwLWI1ZWMtNzliMC04OTU2LTI0Yzg3NDU2YWQzMCIsImV4cCI6MjEwMjM2NTM0MSwianRpIjoiOWlkTlRBNHNRc2U5eEVFMjFRblFKQSIsImlhdCI6MTc4NzAwNTM0MSwibmJmIjoxNzg3MDA1MjIxLCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMWEwMTFkMC1iNWVjLTc5YjAtODk1Ni0yNGM4NzQ1NmFkMzAiLCJzY3AiOlsicG9ydGFsLnciLCJwb3J0YWwuciJdLCJjbGllbnRfaWQiOiIwMWEwMTFkMC1iNWVjLTc5YjAtODk1Ni0yNGM4NzQ1NmFkMzAiLCJzY29wZSI6InBvcnRhbC53IHBvcnRhbC5yIiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQud29ya2Zsb3ctMS4wLjAifQ.HklSKUh2NSjlf469kwmf0f0pi9ojSst8enegZ4ebAsfBRGyQD-VnOFWchWUSksej4ofpSQFFiE_YNVASVImQC487BX6uFstr74laaiTcvr87w4ze8UCjsYJYJaW3OjXtp9SeIkrZS6bbUzqjsAYYQ2CjgaCoZLgnrItZZx1xALwYKeWonMfbpq0iNs02KnZLpoT4DN4YMP1avnT4WzbB_2-FvFIryVL3ecGkt5xho7LOsyQSF5uwpR7V4AO_NmOHTVeOlhpt69lFlY16YeFtzoH87Y0g6fwYTfEsyZ283pIkP7qRXHDkg92KromkqGSmhY7_4Nhwv6mGWrtJ7XmAMg}"
+      operationalStore.bindingId: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
+      operationalStore.bindingDigest: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+      operationalStore.hostId: 01964b05-552a-7c4b-9184-6857e7f3dc5f
+      operationalStore.environment: dev
+      operationalStore.serviceOwner: light-workflow
+      operationalStore.schema: workflow_ops
+      operationalStore.expectedDatabase: operations
+      operationalStore.databaseUrlFile: /run/secrets/operational-database-url
+      operationalStore.credentialGeneration: "1"
+    hostname: light-workflow
+    container_name: light-workflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      light-oauth:
+        condition: service_healthy
+      hybrid-command:
+        condition: service_started
+      hybrid-query:
+        condition: service_started
+      config-server:
+        condition: service_healthy
+      operational-schema-validation:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8436/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  demo-customer-profile-api:
+    image: ${DEMO_CUSTOMER_PROFILE_API_IMAGE:-networknt/demo-customer-profile-api:0.1.0}
+    ports:
+      - 8085:8085
+    volumes:
+      - ./demo-customer-profile-api-rust/config:/app/config:ro
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
+    environment:
+      CUSTOMER_PROFILE_CONFIG_DIR: /app/config
+      CUSTOMER_PROFILE_EXTERNAL_CONFIG_DIR: /app/config-cache
+      LIGHT_PORTAL_AUTHORIZATION: "${DEMO_CUSTOMER_PROFILE_API_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsImV4cCI6MjA5NTEyNDM3MCwianRpIjoiQldSY04yZXdSNjY5OGhiSFF6QTJrdyIsImlhdCI6MTc3OTc2NDM3MCwibmJmIjoxNzc5NzY0MjUwLCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTllNjIzNS0xOTY2LTczMjItYmJjZC0xY2I0MzJiNWJiODgiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJob3N0IjoiMDE5NjRiMDUtNTUyYS03YzRiLTkxODQtNjg1N2U3ZjNkYzVmIiwic2lkIjoiY29tLm5ldHdvcmtudC5jdXN0b21lci5wcm9maWxlLTEuMC4wIn0.AWh3_3kBiYDt2eJRnVWEl_zHOSEhLb0X8ZJWrKBwUCrUTWd8CvwfHbVlcGnPEFGIpSIpJvMIyoGXk-_PGBsTbnTPWKtT5NjFB9W2bHTgAKH3afJWtjnp08jb-tqjv0MCCTqyAmkW9eRViVptj6l13wm3EafJNGIRHk-wYUhgUx7JpPiYRb1zVnQUXjdiXVQxfh7iCHN-hRoNQDzLfOGDttR8nGAhybo6Fhnd06-EsVgITfu0B7RBy1jtifr9JG4JRCRBTbkjrb0WqBZ2HqL8tjAzWo5nzJnUU_1fC6LFDFssdSWCb9eG6Br2Zc2opgXP0lBZL_EoYLwZN_tmf0hL1w}"
+      RUST_LOG: "${RUST_LOG:-warn}"
+      CUSTOMER_PROFILE_LOG_ANSI: "false"
+    hostname: demo-customer-profile-api
+    container_name: demo-customer-profile-api
+    restart: on-failure
+    depends_on:
+      controller:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8085/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  demo-offer-decision-api:
+    image: ${DEMO_OFFER_DECISION_API_IMAGE:-networknt/demo-offer-decision-api:0.1.0}
+    ports:
+      - 8086:8086
+    volumes:
+      - ./demo-offer-decision-api-rust/config:/app/config:ro
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
+    environment:
+      OFFER_DECISION_CONFIG_DIR: /app/config
+      OFFER_DECISION_EXTERNAL_CONFIG_DIR: /app/config-cache
+      LIGHT_PORTAL_AUTHORIZATION: "${DEMO_OFFER_DECISION_API_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsImV4cCI6MjA5NTEyNDQ3OCwianRpIjoiR1F1aGNDWFpTbTZoTHhZb0RtV3R4ZyIsImlhdCI6MTc3OTc2NDQ3OCwibmJmIjoxNzc5NzY0MzU4LCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTllNjIzYS0xZWU5LTcyZWQtYjkyZS1jY2UyYjQ4MzI4MTUiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJob3N0IjoiMDE5NjRiMDUtNTUyYS03YzRiLTkxODQtNjg1N2U3ZjNkYzVmIiwic2lkIjoiY29tLm5ldHdvcmtudC5vZmZlci5kZWNpc2lvbi0xLjAuMCJ9.WNF_mfezFQ8I8VF-6RcHwQGPPJRKVwliOxcTPMSqz1BhpyP77-Cb2kZinuBs3LCvr0fSlHxbJeLN46o9Q7V3UD7Ig0hZEjW2oEyJMoDMhNV-rkfYpUko4nuv214WRumUrH6NndFPqTHnaZks6XDWlWRb_gkjbFZOmOzibfAB3Vemo_Pw_seVZK9-HL7mR2-5S_rBgDR4jdxA6bUSinhYqX0XSn3UW7eROCYPoaMsfRHJApwOBT2Q9bqwf8KGd5Vd-5-uH88YRk1grUj6geKughr6rzbGzDPeD77AxggQq-JIgm5YfKS3gQmmw-19rQklgYb2X32bPrQe5e_1RgXFZQ}"
+      RUST_LOG: "${RUST_LOG:-warn}"
+      OFFER_DECISION_LOG_ANSI: "false"
+    hostname: demo-offer-decision-api
+    container_name: demo-offer-decision-api
+    restart: on-failure
+    depends_on:
+      controller:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8086/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  demo-insurance-claim-mcp-server:
+    image: ${DEMO_INSURANCE_CLAIM_MCP_SERVER_IMAGE:-networknt/demo-insurance-claim-mcp-server:latest}
+    ports:
+      - 8087:8087
+    volumes:
+      - ./demo-insurance-claim-mcp-server-rust/config:/app/config:ro
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
+    environment:
+      INSURANCE_CLAIM_MCP_CONFIG_DIR: /app/config
+      INSURANCE_CLAIM_MCP_EXTERNAL_CONFIG_DIR: /app/config-cache
+      LIGHT_PORTAL_AUTHORIZATION: "${DEMO_INSURANCE_CLAIM_MCP_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxOWVmMDc0LWQyNTgtNzVhNS04MjczLTEzODRkZmZhNmFjNiIsImV4cCI6MjA5NzUxMDcyOSwianRpIjoibS03R3U0LUVSdDJaQjM1QXU2Tk0wUSIsImlhdCI6MTc4MjE1MDcyOSwibmJmIjoxNzgyMTUwNjA5LCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTllZjA3NC1kMjU4LTc1YTUtODI3My0xMzg0ZGZmYTZhYzYiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMTllZjA3NC1kMjU4LTc1YTUtODI3My0xMzg0ZGZmYTZhYzYiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQuZGVtby5pbnN1cmFuY2UtY2xhaW0tbWNwLTEuMC4wIn0.U2QrwSdmBe4seetd5e3LE9J1NiesOACkYAS-Qa4bqJDhvbS1WkaM4Na3yGL0mkdghGQlwWW2jK26HZKk3TmjVdeyGFpM6eAWKfOCIkqYxYoimRfb4TkHyZdz4DihhGmy6_PZpPuAUBrWbsHmQOeliXeh6VhMG3jQT5VG0jNykFA2hYFHl3yHiWKJmuIY5lKqdr0b3oMY42g9NvcDA1Y889EDF1f8r6kocdE0c4c_GWMIbnFzTBEf5JmjJ4pKswCrS9CmIMEOyL8pTrdOy3R2zn_TX_R-Hw2xoeSwpt6Q9_Vy_SE1qNvm2ZKAX1prn-PcYm4Q5oEfCjBqpbPvwObNeA}"
+      RUST_LOG: "${RUST_LOG:-warn}"
+      INSURANCE_CLAIM_MCP_LOG_ANSI: "false"
+    hostname: demo-insurance-claim-mcp-server
+    container_name: demo-insurance-claim-mcp-server
+    restart: on-failure
+    depends_on:
+      controller:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8087/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  light-gateway:
+    image: ${LIGHT_GATEWAY_IMAGE:-networknt/light-gateway:2.3.5}
+    ports:
+      - 443:8443
+    volumes:
+      - ./light-gateway-rust/config:/config
+      - ./light-gateway-rust/lightapi/dist:/lightapi/dist
+      - ./light-gateway-rust/signin/dist:/signin/dist
+      - ./postgres-db/secrets/gateway-database-url:/run/secrets/gateway-database-url:ro
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      gatewayEvidence.enabled: "true"
+      gatewayEvidence.databaseUrlFile: /run/secrets/gateway-database-url
+      gatewayEvidence.bindingId: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
+      gatewayEvidence.bindingDigest: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+      gatewayEvidence.hostId: 01964b05-552a-7c4b-9184-6857e7f3dc5f
+      gatewayEvidence.environment: dev
+      gatewayEvidence.credentialGeneration: "1"
+      gatewayEvidence.gatewayInstance: light-gateway-dev-1
+      gatewayEvidence.sinkEndpoint: stdout://collector
+      # ACCESS_CONTROL_ENABLED: "false"
+      CLIENT_VERIFYHOSTNAME: "false"
+      CLIENT_CACERTPATH: /config/ca.pem
+      STATELESSAUTH_BOOTSTRAPTOKEN: ${STATELESSAUTH_BOOTSTRAPTOKEN}
+      STATELESSAUTH_GITHUBCLIENTSECRET: ${STATELESSAUTH_GITHUBCLIENTSECRET}
+      STATELESSAUTH_GOOGLECLIENTSECRET: ${STATELESSAUTH_GOOGLECLIENTSECRET}
+      STATELESSAUTH_FACEBOOKCLIENTSECRET: ${STATELESSAUTH_FACEBOOKCLIENTSECRET}
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      LIGHT_PORTAL_AUTHORIZATION: "${LIGHT_GATEWAY_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxOWUxNGY5LWViNzgtNzRjNC04MGU3LWVjNmFhNjgwMGIxNSIsImV4cCI6MjA5NzMzMjY5NywianRpIjoidzJURFFLRDNUblMwYWVfVzdmNWVMUSIsImlhdCI6MTc4MTk3MjY5NywibmJmIjoxNzgxOTcyNTc3LCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTllMTRmOS1lYjc4LTc0YzQtODBlNy1lYzZhYTY4MDBiMTUiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMTllMTRmOS1lYjc4LTc0YzQtODBlNy1lYzZhYTY4MDBiMTUiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQucG9ydGFsLmdhdGV3YXktMS4wLjAifQ.CxR175PdsizO1mLtV7f_lPxyLhdlmOmNy80InIHH-R-FlIsDiGXVzjlqn6b3h_gI_v-st0r4vQPXUxotDBNSbyStXUq1HZDdBS_7O15f7VgCbK95re909BC06Qm4uSgPs9F6IB_LfVjwxkJ5nxKg2geXJ6SgQ_m0Ux1Kyeku-ctx6FT-0t50SJZIMaZ73J3oiXuFgbj37fEXxCUZmpibsoLeLALvPUYWseZZNiJ1nBOOPWrPtDdvqIrUJQntL1jrbuAQuRvtORYNYRAG9Ju4QCIv1G8_GhLHSt18EoIMa5WkZUsC73KheAKLYUzhiDcPvb-Nv4jnwMzoNdPBD1mlMA}"
+      WORKFLOW_INVOCATION_SCOPE_TOKEN: "${LIGHT_GATEWAY_WORKFLOW_INVOCATION_SCOPE_TOKEN:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxOWUxNGY5LWViNzgtNzRjNC04MGU3LWVjNmFhNjgwMGIxNSIsImV4cCI6MjA5NzMzMjY5NywianRpIjoidzJURFFLRDNUblMwYWVfVzdmNWVMUSIsImlhdCI6MTc4MTk3MjY5NywibmJmIjoxNzgxOTcyNTc3LCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTllMTRmOS1lYjc4LTc0YzQtODBlNy1lYzZhYTY4MDBiMTUiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMTllMTRmOS1lYjc4LTc0YzQtODBlNy1lYzZhYTY4MDBiMTUiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQucG9ydGFsLmdhdGV3YXktMS4wLjAifQ.CxR175PdsizO1mLtV7f_lPxyLhdlmOmNy80InIHH-R-FlIsDiGXVzjlqn6b3h_gI_v-st0r4vQPXUxotDBNSbyStXUq1HZDdBS_7O15f7VgCbK95re909BC06Qm4uSgPs9F6IB_LfVjwxkJ5nxKg2geXJ6SgQ_m0Ux1Kyeku-ctx6FT-0t50SJZIMaZ73J3oiXuFgbj37fEXxCUZmpibsoLeLALvPUYWseZZNiJ1nBOOPWrPtDdvqIrUJQntL1jrbuAQuRvtORYNYRAG9Ju4QCIv1G8_GhLHSt18EoIMa5WkZUsC73KheAKLYUzhiDcPvb-Nv4jnwMzoNdPBD1mlMA}"
+      RUST_LOG: "${RUST_LOG:-warn}"
+      GATEWAY_LOG_ANSI: "false"
+    hostname: light-gateway
+    container_name: light-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      controller:
+        condition: service_healthy
+      operational-schema-validation:
+        condition: service_completed_successfully
+
+  llm-gateway:
+    image: ${LLM_GATEWAY_IMAGE:-${LIGHT_GATEWAY_IMAGE:-networknt/light-gateway:2.3.5}}
+    ports:
+      - "${LLM_GATEWAY_HOST_PORT:-8444}:8443"
+    volumes:
+      - ./llm-gateway-rust/config:/config:ro
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      LLM_GATEWAY_ENVIRONMENT: "${LLM_GATEWAY_ENVIRONMENT:-dev}"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      NVIDIA_API_KEY: "${NVIDIA_API_KEY:-}"
+      CLIENT_VERIFYHOSTNAME: "false"
+      CLIENT_CACERTPATH: /config/ca.pem
+      LIGHT_PORTAL_AUTHORIZATION: "${LLM_GATEWAY_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxOWZkOWUzLWExMjgtN2UzOS1iNDZjLTNmMDQyOTJjNDAwNyIsImV4cCI6MjEwMTQyNzEwNSwianRpIjoiVXV3bm9CQ1NSVGlTelBJQmVwUHZBQSIsImlhdCI6MTc4NjA2NzEwNSwibmJmIjoxNzg2MDY2OTg1LCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTlmZDllMy1hMTI4LTdlMzktYjQ2Yy0zZjA0MjkyYzQwMDciLCJzY3AiOlsicG9ydGFsLnciLCJwb3J0YWwuciJdLCJjbGllbnRfaWQiOiIwMTlmZDllMy1hMTI4LTdlMzktYjQ2Yy0zZjA0MjkyYzQwMDciLCJzY29wZSI6InBvcnRhbC53IHBvcnRhbC5yIiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQubGxtLmdhdGV3YXktMS4wLjAifQ.ZXhlp0_pvMwDNS-Pws54jvCUFVwtXnyKwBD96V8FEWgWDf0RHovUtwhAYCvBM1OzpwCjIMhmzIQIsTQGcjl0iVK8khsX_VOXUVVVWHRX_u_XTkv05MOT0ywe1c-6ZIJHk-TOK9YCPt8CWE_QZVmbIyK44N8XIZIMhYybNBO_1ffKCyfzo2fJxr8fQwNIyhlHqKO4WF-WhSl4wdrkh879tSf1eELwxuIXPcXQqlbHrZT3WM85ICq1Z6nf6jt6Bp0qsxCEX2I-14PRFTYV7Q_1FBHh5YdWjDaKrvSfF_lsNfi1B-UWrH6nptkawaGhhM14enqDMzHM2kcRIti5nDvajQ}"
+      RUST_LOG: "${LLM_GATEWAY_RUST_LOG:-${RUST_LOG:-info}}"
+      GATEWAY_LOG_ANSI: "false"
+    hostname: llm-gateway
+    container_name: llm-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      controller:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      light-oauth:
+        condition: service_healthy
+
+  light-a2a:
+    profiles: ["a2a"]
+    image: ${LIGHT_A2A_IMAGE:-networknt/light-a2a:latest}
+    ports:
+      - ${LIGHT_A2A_PORT:-8448}:8448
+    volumes:
+      - ./light-a2a-rust/config:/config:ro
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
+      - ./postgres-db/secrets/a2a-database-url:/run/secrets/operational-database-url:ro
+      - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      LIGHT_PORTAL_AUTHORIZATION: "${LIGHT_A2A_LIGHT_PORTAL_AUTHORIZATION:-}"
+      LIGHT_ENV_TAG: dev
+      RUST_LOG: "${LIGHT_A2A_RUST_LOG:-info}"
+    hostname: light-a2a
+    container_name: light-a2a
+    depends_on:
+      operational-schema-validation:
+        condition: service_completed_successfully
+      controller:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8448/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  light-agent:
+    image: ${LIGHT_AGENT_IMAGE:-networknt/light-agent:2.3.5}
+    ports:
+      - ${LIGHT_AGENT_PORT:-8083}:8083
+    volumes:
+      - ./light-agent-rust/config:/config:ro
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
+      - ./postgres-db/secrets/operational-database-url:/run/secrets/operational-database-url:ro
+      - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      LIGHT_PORTAL_AUTHORIZATION: "${LIGHT_AGENT_LIGHT_PORTAL_AUTHORIZATION:-}"
+      LIGHT_AGENT_HOST_ID: "${LIGHT_AGENT_HOST_ID:-01964b05-552a-7c4b-9184-6857e7f3dc5f}"
+      LIGHT_AGENT_AGENT_DEF_ID: "${LIGHT_AGENT_AGENT_DEF_ID:-}"
+      CODEX_API_KEY: "${CODEX_API_KEY:-}"
+      CODEX_ACCOUNT_ID: "${CODEX_ACCOUNT_ID:-}"
+      CODEX_REASONING_EFFORT: "${CODEX_REASONING_EFFORT:-low}"
+      LIGHT_AGENT_MODEL: "${LIGHT_AGENT_MODEL:-gpt-5.5}"
+      LIGHT_AGENT_TEMPERATURE: "${LIGHT_AGENT_TEMPERATURE:-0.7}"
+      RUST_LOG: "${LIGHT_AGENT_RUST_LOG:-info}"
+      AGENT_LOG_ANSI: "false"
+      LIGHT_AGENT_DELEGATION_SECRET: "${LIGHT_AGENT_DELEGATION_SECRET:-change-me-light-knowledge-local-secret}"
+      LIGHT_AGENT_KNOWLEDGE_URL: "http://light-knowledge:8092/"
+      LIGHT_AGENT_KNOWLEDGE_ALLOW_PRIVATE_PLAINTEXT: "true"
+      LIGHT_ENV_TAG: "${LIGHT_ENV_TAG:-dev}"
+    hostname: light-agent
+    container_name: light-agent
+    depends_on:
+      postgres:
+        condition: service_healthy
+      operational-schema-validation:
+        condition: service_completed_successfully
+      controller:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      hybrid-query:
+        condition: service_started
+      light-gateway:
+        condition: service_started
+      light-knowledge:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  light-knowledge:
+    image: ${LIGHT_KNOWLEDGE_IMAGE:-networknt/light-knowledge:latest}
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    working_dir: /tmp
+    ports:
+      - "${LIGHT_KNOWLEDGE_PORT:-8092}:8092"
+    volumes:
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
+      - ./light-knowledge/objects:/var/lib/light-knowledge/objects
+      - ./light-knowledge/checkouts:/var/lib/light-knowledge/checkouts
+    environment:
+      CLIENT_VERIFYHOSTNAME: "false"
+      CLIENT_CACERTPATH: /keystore/ca.pem
+      LIGHT_KNOWLEDGE_DATABASE_URL: postgres://light_knowledge_dev_runtime:knowledge-local-secret@postgres:5432/knowledge
+      LIGHT_KNOWLEDGE_WORKER_DATABASE_URL: postgres://light_knowledge_dev_runtime:knowledge-local-secret@postgres:5432/knowledge
+      knowledgeWorker.jobExecutionMode: "external"
+      LIGHT_AGENT_DELEGATION_SECRET: ${LIGHT_AGENT_DELEGATION_SECRET:-change-me-light-knowledge-local-secret}
+      LIGHT_KNOWLEDGE_QUERY_CACHE_KEY: ${LIGHT_KNOWLEDGE_QUERY_CACHE_KEY:-local-query-cache-key-0123456789abcdef0123456789abcdef}
+      LIGHT_PORTAL_AUTHORIZATION: ${KNOWLEDGE_PORTAL_AUTHORIZATION:-eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxOWZmMmY3LWU1NmUtNzU4YS1hMTdiLTQ1YjA1NzU1NjMyNiIsImV4cCI6MjEwMTkyNDg3MCwianRpIjoicGVIWjljTFdRZksxcW9qc3VNS3ZJdyIsImlhdCI6MTc4NjU2NDg3MCwibmJmIjoxNzg2NTY0NzUwLCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTlmZjJmNy1lNTZlLTc1OGEtYTE3Yi00NWIwNTc1NTYzMjYiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMTlmZjJmNy1lNTZlLTc1OGEtYTE3Yi00NWIwNTc1NTYzMjYiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQubGlnaHQta25vd2xlZGdlLTEuMC4wIiwidWlkIjoiMDE5NjRiMDUtNTUzMi03Yzc5LThjZGUtMTkxZGNiZDQyMWI4IiwidXR5IjoiRiJ9.d1OdH6yJXSeuVyZJ-TLMzAL3BoTzl7OsugtLU6v_LoMRuMrzT-pG5u7x5Zd_iHyhmFThJM7MuL9sDNYCOj-bqpyxhtq1R9nAKjVOilwRO32hrO5V1HFLvXjSqBPWyeXuHvlFgENxCy1QfdAZXw4g5rXjMGiBwyEYIA-yXrY3up1tkY3HtkfuAYaIWuPSJ8JagiJzaWE-dkpNoz7ofxIyQW3GDjPP1qkREo5lT80cabWOnxwO-8HDWK1rWORP0NoKx9blEomGPMUET0OT5iCxAabJmQC0Vt7Oks83pfml8jTRRJqQMiZMpp8OIv5Jwmt2CUhp3j5T6CzQpVugMgfT9A}
+      KNOWLEDGE_PORTAL_AUTHORIZATION: ${KNOWLEDGE_PORTAL_AUTHORIZATION:-eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxOWZmMmY3LWU1NmUtNzU4YS1hMTdiLTQ1YjA1NzU1NjMyNiIsImV4cCI6MjEwMTkyNDg3MCwianRpIjoicGVIWjljTFdRZksxcW9qc3VNS3ZJdyIsImlhdCI6MTc4NjU2NDg3MCwibmJmIjoxNzg2NTY0NzUwLCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTlmZjJmNy1lNTZlLTc1OGEtYTE3Yi00NWIwNTc1NTYzMjYiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMTlmZjJmNy1lNTZlLTc1OGEtYTE3Yi00NWIwNTc1NTYzMjYiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQubGlnaHQta25vd2xlZGdlLTEuMC4wIiwidWlkIjoiMDE5NjRiMDUtNTUzMi03Yzc5LThjZGUtMTkxZGNiZDQyMWI4IiwidXR5IjoiRiJ9.d1OdH6yJXSeuVyZJ-TLMzAL3BoTzl7OsugtLU6v_LoMRuMrzT-pG5u7x5Zd_iHyhmFThJM7MuL9sDNYCOj-bqpyxhtq1R9nAKjVOilwRO32hrO5V1HFLvXjSqBPWyeXuHvlFgENxCy1QfdAZXw4g5rXjMGiBwyEYIA-yXrY3up1tkY3HtkfuAYaIWuPSJ8JagiJzaWE-dkpNoz7ofxIyQW3GDjPP1qkREo5lT80cabWOnxwO-8HDWK1rWORP0NoKx9blEomGPMUET0OT5iCxAabJmQC0Vt7Oks83pfml8jTRRJqQMiZMpp8OIv5Jwmt2CUhp3j5T6CzQpVugMgfT9A}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      knowledge-schema-migration:
+        condition: service_completed_successfully
+      light-knowledge-admin:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      controller:
+        condition: service_healthy
+      llm-gateway:
+        condition: service_started
+
+  light-knowledge-worker:
+    image: ${LIGHT_KNOWLEDGE_WORKER_IMAGE:-networknt/light-knowledge-worker:latest}
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    working_dir: /tmp
+    volumes:
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
+      - ./light-knowledge/objects:/var/lib/light-knowledge/objects
+      - ./light-knowledge/checkouts:/var/lib/light-knowledge/checkouts
+    environment:
+      LIGHT_KNOWLEDGE_WORKER_DATABASE_URL: postgres://light_knowledge_dev_runtime:knowledge-local-secret@postgres:5432/knowledge
+      LIGHT_KNOWLEDGE_EXPECTED_DATABASE: knowledge
+      LIGHT_PORTAL_AUTHORIZATION: ${KNOWLEDGE_PORTAL_AUTHORIZATION:-eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxOWZmMmY3LWU1NmUtNzU4YS1hMTdiLTQ1YjA1NzU1NjMyNiIsImV4cCI6MjEwMTkyNDg3MCwianRpIjoicGVIWjljTFdRZksxcW9qc3VNS3ZJdyIsImlhdCI6MTc4NjU2NDg3MCwibmJmIjoxNzg2NTY0NzUwLCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTlmZjJmNy1lNTZlLTc1OGEtYTE3Yi00NWIwNTc1NTYzMjYiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMTlmZjJmNy1lNTZlLTc1OGEtYTE3Yi00NWIwNTc1NTYzMjYiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQubGlnaHQta25vd2xlZGdlLTEuMC4wIiwidWlkIjoiMDE5NjRiMDUtNTUzMi03Yzc5LThjZGUtMTkxZGNiZDQyMWI4IiwidXR5IjoiRiJ9.d1OdH6yJXSeuVyZJ-TLMzAL3BoTzl7OsugtLU6v_LoMRuMrzT-pG5u7x5Zd_iHyhmFThJM7MuL9sDNYCOj-bqpyxhtq1R9nAKjVOilwRO32hrO5V1HFLvXjSqBPWyeXuHvlFgENxCy1QfdAZXw4g5rXjMGiBwyEYIA-yXrY3up1tkY3HtkfuAYaIWuPSJ8JagiJzaWE-dkpNoz7ofxIyQW3GDjPP1qkREo5lT80cabWOnxwO-8HDWK1rWORP0NoKx9blEomGPMUET0OT5iCxAabJmQC0Vt7Oks83pfml8jTRRJqQMiZMpp8OIv5Jwmt2CUhp3j5T6CzQpVugMgfT9A}
+      knowledgeWorker.embeddingGatewayVerifyHostname: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      knowledge-schema-migration:
+        condition: service_completed_successfully
+      light-knowledge-admin:
+        condition: service_healthy
+      llm-gateway:
+        condition: service_started
+
+  light-knowledge-admin:
+    image: ${LIGHT_KNOWLEDGE_ADMIN_IMAGE:-networknt/light-knowledge-admin:latest}
+    expose:
+      - "8093"
+    volumes:
+      - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
+    environment:
+      LIGHT_KNOWLEDGE_DATABASE_URL: postgres://light_knowledge_dev_admin_runtime:knowledge-admin-local-secret@postgres:5432/knowledge
+      LIGHT_KNOWLEDGE_ADMIN_OPAQUE_ACTOR_KEY: ${LIGHT_KNOWLEDGE_ADMIN_OPAQUE_ACTOR_KEY:-local-opaque-actor-key-0123456789abcdef}
+      LIGHT_KNOWLEDGE_CONTROL_SNAPSHOT_SIGNING_KEY: ${LIGHT_KNOWLEDGE_CONTROL_SNAPSHOT_SIGNING_KEY:-local-control-snapshot-signing-key-0123456789abcdef}
+      CLIENT_VERIFYHOSTNAME: "false"
+      CLIENT_CACERTPATH: /keystore/ca.pem
+      CLIENT_TOKENKEYSERVERURL: https://light-oauth:6881
+      CLIENT_TOKENKEYURI: /oauth2/AZZRJE52eXu3t1hseacnGQ/keys
+      SECURITY_AUDIENCE: "[urn:com.networknt]"
+      SECURITY_ISSUER: urn:com:networknt:oauth2:v1
+      knowledgeAdmin.ignoreJwtExpiry: "true"
+      KNOWLEDGE_ADMIN_SNAPSHOT_SOURCE_ENABLED: "true"
+      KNOWLEDGE_ADMIN_SNAPSHOT_QUERY_URL: https://hybrid-query:8440/portal/query
+      KNOWLEDGE_ADMIN_SNAPSHOT_ENVIRONMENT: ${KNOWLEDGE_SNAPSHOT_ENVIRONMENT:-dev}
+      KNOWLEDGE_ADMIN_SNAPSHOT_REFRESH_SECONDS: ${KNOWLEDGE_SNAPSHOT_REFRESH_SECONDS:-60}
+      KNOWLEDGE_ADMIN_SNAPSHOT_VERIFY_HOSTNAME: "false"
+      KNOWLEDGE_ADMIN_SNAPSHOT_CA_CERT_FILE: /keystore/ca.pem
+      LIGHT_KNOWLEDGE_SNAPSHOT_AUTHORIZATION: ${KNOWLEDGE_SNAPSHOT_AUTHORIZATION:-eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxYTAyNzg3LWM1YTQtNzJiMC04ZGNjLTdkYmU2NTAyZDc0MyIsImV4cCI6MjEwMjcyOTY2NSwianRpIjoiaWVrck4tNVNUTnV2Z0I5NE1VQ1pYdyIsImlhdCI6MTc4NzM2OTY2NSwibmJmIjoxNzg3MzY5NTQ1LCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMWEwMjc4Ny1jNWE0LTcyYjAtOGRjYy03ZGJlNjUwMmQ3NDMiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMWEwMjc4Ny1jNWE0LTcyYjAtOGRjYy03ZGJlNjUwMmQ3NDMiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInJvbGUiOiJhZG1pbiBob3N0LWFkbWluIiwic2lkIjoiY29tLm5ldHdvcmtudC5saWdodC1rbm93bGVkZ2UtYWRtaW4tMS4wLjAiLCJ1aWQiOiIwMTk2NGIwNS01NTMyLTdjNzktOGNkZS0xOTFkY2JkNDIxYjgiLCJ1dHkiOiJGIn0.z_dqOtZZd0ntH20m3n8NwHU5G8UNRUYsbWhEA3_jcYR89AVPTBoHAEtXrRTWqru99gfAjbEQRUHUuCfObKtjeVTljMJYMvQkHiTfdKmk32K7zupJqFe_Wbn7UG_c9DoNZuJYdDlcISlnGLo-hcgXMxaRRuIHTx2SkZU2MH_CqzCxBtVGTDaTYSy99qf5jjh32Uu3TtT27wJIMBUssBCMMnDSgCTe2km3I3YFTBBSaJBJaNPc_p0YJfwFIFd4aLnFhRno67SQ2hY2Aqrd_h-DMIYxM03lDes1SfDFSAv17HRhZL_E1MWB17Mwiz09qT8mbzGPxtPH8lrtIgAcznXh6A}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      knowledge-schema-migration:
+        condition: service_completed_successfully
+      light-oauth:
+        condition: service_healthy
+      hybrid-query:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8093/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  light-workflow-config-cache:

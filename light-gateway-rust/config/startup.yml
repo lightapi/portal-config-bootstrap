@@ -1,0 +1,10 @@
+host: ${LIGHT_GATEWAY_STARTUP_HOST:dev.lightapi.net}
+serviceId: ${LIGHT_GATEWAY_SERVICE_ID:com.networknt.portal.gateway-1.0.0}
+envTag: ${LIGHT_GATEWAY_ENVIRONMENT:dev}
+acceptHeader: application/yaml
+timeout: ${LIGHT_GATEWAY_STARTUP_TIMEOUT:3000}
+connectTimeout: ${LIGHT_GATEWAY_STARTUP_CONNECT_TIMEOUT:3000}
+configServerUri: ${LIGHT_CONFIG_SERVER_URI:https://config-server:8435}
+authorization: ${LIGHT_PORTAL_AUTHORIZATION:}
+bootstrapCaCertPath: ${LIGHT_GATEWAY_BOOTSTRAP_CA_CERT_PATH:/config/ca.pem}
+externalConfigDir: ${LIGHT_GATEWAY_EXTERNAL_CONFIG_DIR:/app/config-cache}

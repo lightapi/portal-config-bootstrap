@@ -1,0 +1,122 @@
+# server.yml
+server.httpsPort: 8440
+server.serviceId: com.networknt.portal.hybrid.query-1.0.0
+
+# client.yml
+client.verifyHostname: false
+client.tokenAcClientId: f7d42348-c647-4efb-a52d-4c5787421e72
+client.tokenCcClientId: f7d42348-c647-4efb-a52d-4c5787421e72
+client.tokenKeyServerUrl: https://light-oauth:6881
+client.tokenKeyUri: /oauth2/AZZRJE52eXu3t1hseacnGQ/keys
+
+# kafka-consumer.yml
+kafka-consumer.bootstrap.servers: broker:29092
+
+# kafka-producer.yml
+kafka-producer.bootstrap.servers: broker:29092
+
+# kafka-streams.yml
+kafka-streams.bootstrap.servers: broker:29092
+kafka-streams.application.id: hybrid-query
+# kafka-streams.cleanUp: true
+
+# portal.yml
+portal.sendEmail: false
+portal.cmdHost: https://localhost:8439
+portal.resetHost: https://devsignin.lightapi.net
+portal.topic: portal-event
+
+# db-provider.yml
+# For postgres database running in a docker container, you have to use the driverClassName.
+db-provider.driverClassName: org.postgresql.Driver
+db-provider.jdbcUrl: jdbc:postgresql://postgres:5432/configserver
+db-provider.username: portal_dev_runtime
+db-provider.password: secret
+db-provider.maximumPoolSize: 3
+
+# operational-cleanup.yml
+operational-cleanup.enabled: true
+operational-cleanup.initialDelaySeconds: 60
+operational-cleanup.intervalSeconds: 86400
+operational-cleanup.batchSize: 500
+operational-cleanup.maxBatchesPerRun: 10
+operational-cleanup.lockEnabled: true
+operational-cleanup.lockKey: 20260508
+operational-cleanup.notificationSuccessRetentionDays: 90
+operational-cleanup.notificationFailureRetentionDays: 180
+operational-cleanup.privateMessageRetentionDays: 180
+
+# cache.yml
+cache.caches:
+  - cacheName: jwt
+    expiryInMinutes: 15
+    maxSize: 100
+  - cacheName: jwk
+    expiryInMinutes: 129600
+    maxSize: 100
+  - cacheName: portal-data
+    expiryInMinutes: 60
+    maxSize: 1000
+  - cacheName: auth_code
+    expiryInMinutes: 5
+    maxSize: 1000
+
+# direct-registry.yml
+direct-registry.directUrls:
+  com.networknt.portal.hybrid.query-1.0.0: https://hybrid-query:8440
+  com.networknt.portal.hybrid.command-1.0.0: https://hybrid-command:8439
+  com.networknt.light-oauth-1.0.0: https://light-oauth:6881
+  com.networknt.reference-1.0.0: https://reference:2498
+
+# service.yml
+service.singletons:
+  - com.networknt.registry.URL:
+    - com.networknt.registry.URLImpl
+  - com.networknt.registry.Registry:
+    - com.networknt.registry.support.DirectRegistry
+  - com.networknt.balance.LoadBalance:
+    - com.networknt.balance.RoundRobinLoadBalance
+  - com.networknt.cluster.Cluster:
+    - com.networknt.cluster.LightCluster
+  - com.networknt.cache.CacheManager:
+    - com.networknt.cache.CaffeineCacheManager
+  # PortalDbProviderImpl of DbProvider
+  - com.networknt.db.provider.DbProvider:
+    - net.lightapi.portal.db.PortalDbProviderImpl
+  # StartupHookProvider implementations, there are one to many and they are called in the same sequence defined.
+  - com.networknt.server.StartupHookProvider:
+    # registry all service handlers by from annotations
+    - com.networknt.rpc.router.RpcStartupHookProvider
+    # database startup hook to initialize datasource and cache.
+    - com.networknt.db.provider.SqlDbStartupHook
+    # Validate reloadable event replay configuration before processors start.
+    - net.lightapi.portal.db.EventReplayConfigStartupHook
+    # Postgres Pub/Sub event processor
+    - net.lightapi.portal.db.DbEventConsumerStartupHook
+    # Operational cleanup startup hook
+    - net.lightapi.portal.db.OperationalCleanupStartupHook
+    # Embedding task worker startup hook
+    - net.lightapi.portal.db.EmbeddingTaskStartupHook
+    # Schedule Query Startup Hook
+    - net.lightapi.portal.db.ScheduleQueryStartup
+  # ShutdownHookProvider implementations, there are one to many and they are called in the same sequence defined.
+  - com.networknt.server.ShutdownHookProvider:
+    # Postgres Pub/Sub event processor
+    - net.lightapi.portal.db.DbEventConsumerShutdownHook
+    # Operational cleanup shutdown hook
+    - net.lightapi.portal.db.OperationalCleanupShutdownHook
+    # Embedding task worker shutdown hook
+    - net.lightapi.portal.db.EmbeddingTaskShutdownHook
+    # Schedule Query Shutdown Hook
+    - net.lightapi.portal.db.ScheduleQueryShutdown
+
+# security.yml
+security.enableVerifyJwt: true
+
+# rpc-router.yml
+rpc-router.handlerPackages: net.lightapi.portal
+rpc-router.jsonPath: /portal/query
+
+# db-event-consumer.yml
+db-event-consumer.totalPartitions: 1
+db-event-consumer.partitionId: 0

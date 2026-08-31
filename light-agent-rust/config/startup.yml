@@ -1,0 +1,10 @@
+host: ${startup.host:dev.lightapi.net}
+serviceId: ${server.serviceId:com.networknt.agent.account-1.0.0}
+envTag: ${server.environment:dev}
+acceptHeader: application/yaml
+timeout: ${startup.timeout:3000}
+connectTimeout: ${startup.connectTimeout:3000}
+configServerUri: ${light-config-server-uri}
+authorization: ${light_portal_authorization:}
+bootstrapCaCertPath: ${startup.bootstrapCaCertPath:}
+externalConfigDir: ${startup.externalConfigDir:/app/config-cache}

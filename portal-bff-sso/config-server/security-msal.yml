@@ -1,0 +1,7 @@
+enableVerifyJwt: true
+ignoreJwtExpiry: false
+enableRelaxedKeyValidation: false
+issuer: ${security-msal.issuer:}
+audience: ${security-msal.audience:}
+jwt:
+  clockSkewInSeconds: 60

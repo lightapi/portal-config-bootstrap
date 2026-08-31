@@ -1,0 +1,52 @@
+startup.host: ${LIGHT_AGENT_STARTUP_HOST:dev.lightapi.net}
+startup.timeout: 3000
+startup.connectTimeout: 3000
+startup.bootstrapCaCertPath: /keystore/ca.pem
+startup.externalConfigDir: /app/config-cache
+
+light-config-server-uri: https://config-server:8435
+
+server.serviceId: ${LIGHT_AGENT_SERVICE_ID:com.networknt.agent.account-1.0.0}
+server.environment: ${LIGHT_AGENT_ENVIRONMENT:}
+server.ip: 0.0.0.0
+server.advertisedAddress: ${LIGHT_AGENT_ADVERTISED_ADDRESS:light-agent}
+server.httpPort: ${LIGHT_AGENT_HTTP_PORT:8083}
+server.enableHttp: true
+server.enableHttps: false
+server.enableRegistry: true
+server.startOnRegistryFailure: true
+
+portalRegistry.portalUrl: https://controller:8438
+portalQuery.url: https://hybrid-query:8440
+
+mcp-client.gatewayUrl: https://light-gateway:8443
+mcp-client.path: /mcp
+mcp-client.timeoutMs: 10000
+
+client.verifyHostname: false
+client.caCertPath: /keystore/ca.pem
+
+operationalStore.contractVersion: 1
+operationalStore.bindingId: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
+operationalStore.bindingDigest: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+operationalStore.profileId: dev-dev-dedicated
+operationalStore.deploymentProfile: DEV_DEDICATED
+operationalStore.scopeKind: HOST_ENVIRONMENT
+operationalStore.scopeId: 01964b05-552a-7c4b-9184-6857e7f3dc5f
+operationalStore.hostId: 01964b05-552a-7c4b-9184-6857e7f3dc5f
+operationalStore.environment: dev
+operationalStore.serviceOwner: light-agent
+operationalStore.schema: agent_ops
+operationalStore.minimumSchemaVersion: 1
+operationalStore.expectedDatabase: operations
+operationalStore.databaseUrlFile: /run/secrets/operational-database-url
+operationalStore.credentialGeneration: 1
+
+model-provider.provider: codex
+model-provider.model: ${LIGHT_AGENT_MODEL:gpt-5.5}
+model-provider.temperature: ${LIGHT_AGENT_TEMPERATURE:0.7}
+
+codex.apiKey: ${CODEX_API_KEY:}
+codex.accountId: ${CODEX_ACCOUNT_ID:}
+codex.reasoningEffort: ${CODEX_REASONING_EFFORT:low}
+codex.model: ${LIGHT_AGENT_MODEL:gpt-5.5}

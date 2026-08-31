@@ -1,0 +1,52 @@
+services:
+  portal-bff-sso:
+    image: ${PORTAL_BFF_SSO_IMAGE:-${LIGHT_GATEWAY_IMAGE:-networknt/light-gateway:2.3.5}}
+    ports:
+      - "${PORTAL_BFF_SSO_HOST_PORT:-8445}:8443"
+    volumes:
+      - ./portal-bff-sso/config:/config:ro
+      - ./portal-bff-sso/tls:/tls:ro
+      - ./portal-bff-sso/lightapi/dist:/lightapi/dist:ro
+      - ./light-controller-rust/ca.pem:/config-server-ca/ca.pem:ro
+      - ./postgres-db/secrets/gateway-database-url:/run/secrets/gateway-database-url:ro
+      - portal-bff-sso-config-cache:/app/config-cache
+    environment:
+      LIGHT_RS_CONFIG_DIR: /config
+      PORTAL_BFF_SSO_STARTUP_HOST: "${CUSTOMER_PORTAL_HOST:-dev.yourcompany.com}"
+      PORTAL_BFF_SSO_SERVICE_ID: "${PORTAL_BFF_SSO_SERVICE_ID:-com.yourcompany.portal.bff.sso-1.0.0}"
+      PORTAL_BFF_SSO_ENVIRONMENT: "${PORTAL_BFF_SSO_ENVIRONMENT:-dev}"
+      LIGHT_CONFIG_SERVER_URI: "${LIGHT_CONFIG_SERVER_URI:-https://config-server:8435}"
+      LIGHT_PORTAL_AUTHORIZATION: "${PORTAL_BFF_SSO_LIGHT_PORTAL_AUTHORIZATION:?Set PORTAL_BFF_SSO_LIGHT_PORTAL_AUTHORIZATION in .env.bootstrap}"
+      CLIENT_VERIFYHOSTNAME: "${PORTAL_BFF_SSO_VERIFY_CONFIG_SERVER_HOSTNAME:-false}"
+      CLIENT_CACERTPATH: /config-server-ca/ca.pem
+      gatewayEvidence.enabled: "${PORTAL_BFF_SSO_EVIDENCE_ENABLED:-false}"
+      security-msal.issuer: "https://login.microsoftonline.com/${MSAL_TENANT_ID:?Set MSAL_TENANT_ID in .env.bootstrap}/v2.0"
+      security-msal.audience: "${MSAL_CLIENT_ID:?Set MSAL_CLIENT_ID in .env.bootstrap}"
+      msal-exchange.cookieDomain: "${CUSTOMER_PORTAL_HOST:-dev.yourcompany.com}"
+      msal-exchange.cookieSecure: "true"
+      msal-exchange.cookieSameSite: "${MSAL_COOKIE_SAME_SITE:-Lax}"
+      msal-exchange.subjectTokenType: "urn:ietf:params:oauth:token-type:jwt"
+      msal-exchange.authorizationToken: "light-oauth"
+      client.tokenServerUrl: "${LIGHT_OAUTH_TOKEN_SERVER_URL:-https://light-oauth:6881}"
+      client.tokenExUri: "${LIGHT_OAUTH_TOKEN_EXCHANGE_URI:-/oauth2/token}"
+      client.tokenExClientId: "${MSAL_EXCHANGE_CLIENT_ID:?Set MSAL_EXCHANGE_CLIENT_ID in .env.bootstrap}"
+      client.tokenExClientSecret: "${MSAL_EXCHANGE_CLIENT_SECRET:?Set MSAL_EXCHANGE_CLIENT_SECRET in .env.bootstrap}"
+      client.subjectTokenType: "urn:ietf:params:oauth:token-type:jwt"
+      RUST_LOG: "${PORTAL_BFF_SSO_RUST_LOG:-info}"
+      GATEWAY_LOG_ANSI: "false"
+    hostname: portal-bff-sso
+    container_name: portal-bff-sso
+    depends_on:
+      postgres:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      controller:
+        condition: service_healthy
+      light-oauth:
+        condition: service_healthy
+      operational-schema-validation:
+        condition: service_completed_successfully
+
+volumes:
+  portal-bff-sso-config-cache:

@@ -1,0 +1,4 @@
+# GraphEventRegistry rejects these legacy update shapes instead of routing them.
+InstanceApiUpdatedEvent
+InstanceAppUpdatedEvent
+InstanceAppApiUpdatedEvent

@@ -1,0 +1,20 @@
+startup.host: dev.lightapi.net
+startup.timeout: 3000
+startup.connectTimeout: 3000
+startup.bootstrapCaCertPath: /keystore/ca.pem
+startup.externalConfigDir: /app/config-cache
+
+light-config-server-uri: https://config-server:8435
+
+server.serviceId: com.networknt.customer.profile-1.0.0
+server.environment: dev
+server.ip: 0.0.0.0
+server.advertisedAddress: demo-customer-profile-api
+server.httpPort: 8085
+server.enableHttp: true
+server.enableHttps: false
+server.enableRegistry: true
+server.startOnRegistryFailure: true
+
+portalRegistry.portalUrl: https://controller:8438
+client.verifyHostname: false

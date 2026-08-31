@@ -1,0 +1,71 @@
+[
+  {
+    "id": "a6773cd9-27b1-4408-8593-9c8a25b0c974",
+    "data": {
+      "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+      "configId": "9a1fc5dc-4280-59f8-94a0-6fc861665d5f",
+      "instanceId": "019d2a45-4eb7-7e20-a6b6-9cc3261e89a1",
+      "propertyId": "d0a2fdc8-9e3e-59c0-b67c-f21e26ffcd09",
+      "propertyValue": "https://dev.lightapi.net/#/app/dashboard",
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-08-07T20:28:16Z",
+    "type": "ConfigInstanceUpdatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019d2a45-4eb7-7e20-a6b6-9cc3261e89a1|d0a2fdc8-9e3e-59c0-b67c-f21e26ffcd09",
+    "specversion": "1.0",
+    "aggregatetype": "ConfigInstance",
+    "commandkind": "MUTATION",
+    "datacontenttype": "application/json",
+    "aggregateversion": "2"
+  },
+  {
+    "id": "2bc697c2-1042-475b-af5f-4bcdbf58b298",
+    "data": {
+      "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+      "configId": "9a1fc5dc-4280-59f8-94a0-6fc861665d5f",
+      "instanceId": "019d2a45-4eb7-7e20-a6b6-9cc3261e89a1",
+      "propertyId": "15ac3b79-9555-59a6-99cd-19c86f074e02",
+      "propertyValue": "https://dev.lightapi.net/#/app/dashboard",
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-08-07T20:28:16Z",
+    "type": "ConfigInstanceUpdatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019d2a45-4eb7-7e20-a6b6-9cc3261e89a1|15ac3b79-9555-59a6-99cd-19c86f074e02",
+    "specversion": "1.0",
+    "aggregatetype": "ConfigInstance",
+    "commandkind": "MUTATION",
+    "datacontenttype": "application/json",
+    "aggregateversion": "2"
+  },
+  {
+    "id": "ffff4d96-c7b4-4152-998c-3f6acee05210",
+    "data": {
+      "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+      "configId": "9a1fc5dc-4280-59f8-94a0-6fc861665d5f",
+      "instanceId": "019d2a45-4eb7-7e20-a6b6-9cc3261e89a1",
+      "propertyId": "8cbc1fcb-4190-599b-b979-a07a296a2c50",
+      "propertyValue": "dev.lightapi.net",
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-08-07T20:28:16Z",
+    "type": "ConfigInstanceUpdatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019d2a45-4eb7-7e20-a6b6-9cc3261e89a1|8cbc1fcb-4190-599b-b979-a07a296a2c50",
+    "specversion": "1.0",
+    "aggregatetype": "ConfigInstance",
+    "commandkind": "MUTATION",
+    "datacontenttype": "application/json",
+    "aggregateversion": "2"
+  }
+]

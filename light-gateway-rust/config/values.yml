@@ -1,0 +1,4 @@
+server.serviceId: com.networknt.portal.gateway-1.0.0
+server.environment: dev
+server.tlsCertPath: /config/cert.pem
+server.tlsKeyPath: /config/key.pem

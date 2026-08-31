@@ -1,0 +1,4 @@
+server.serviceId: ${PORTAL_BFF_SSO_SERVICE_ID:com.yourcompany.portal.bff.sso-1.0.0}
+server.environment: ${PORTAL_BFF_SSO_ENVIRONMENT:dev}
+server.tlsCertPath: /tls/cert.pem
+server.tlsKeyPath: /tls/key.pem

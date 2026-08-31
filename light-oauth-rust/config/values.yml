@@ -1,0 +1,23 @@
+# Default configuration values for light-oauth
+db_url: "postgres://portal_dev_runtime:secret@postgres:5432/configserver"
+server_ip: "::"
+server_port: 6881
+host_id: "01964b05-552a-7c4b-9184-6857e7f3dc5f"
+tls_cert_path: "cert.pem"
+tls_key_path: "key.pem"
+jwt_issuer: "urn:com:networknt:oauth2:v1"
+jwt_audience: "urn:com.networknt"
+oidc_discovery_enabled: true
+public_issuer_base_url: "https://devsignin.lightapi.net"
+default_provider_id: "AZZRJE52eXu3t1hseacnGQ"
+oidc_scopes_supported:
+  - "portal.r"
+  - "portal.w"
+msal_jwks_url: "https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys"
+msal_jwks_accept_invalid_certs: true
+msal_jwt_expected_issuer: "urn:com:networknt:oauth2:v1"
+msal_jwt_expected_audience: "urn:com.networknt"
+ccac_jwks_url: "https://light-oauth:6881/oauth2/AZZRJE52eXu3t1hseacnGQ/keys"
+ccac_jwks_accept_invalid_certs: true
+ccac_jwt_expected_issuer: "urn:com:networknt:oauth2:v1"
+ccac_jwt_expected_audience: "urn:com.networknt"

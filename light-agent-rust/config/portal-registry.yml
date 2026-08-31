@@ -1,0 +1,4 @@
+portalUrl: https://controller:8438
+portalQueryUrl: https://hybrid-query:8440
+portalToken: ${light_portal_authorization:}
+controllerDiscoveryToken: ${portalRegistry.controllerDiscoveryToken:}

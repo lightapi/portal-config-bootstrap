@@ -1,0 +1,8 @@
+# Default configuration values for portal-service
+portalService.dbUrl: "postgres://portal_dev_runtime:secret@postgres:5432/configserver"
+portalService.hostId: "01964b05-552a-7c4b-9184-6857e7f3dc5f"
+server.ip: "::"
+server.httpsPort: 2498
+server.tlsCertPath: "/config/cert.pem"
+server.tlsKeyPath: "/config/key.pem"
+server.serviceId: "com.networknt.reference-1.0.0"

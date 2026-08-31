@@ -1,0 +1,10 @@
+host: ${startup.host:dev.lightapi.net}
+serviceId: ${server.serviceId:com.networknt.demo.insurance-claim-mcp-1.0.0}
+envTag: ${server.environment:dev}
+acceptHeader: application/yaml
+timeout: ${startup.timeout:3000}
+connectTimeout: ${startup.connectTimeout:3000}
+configServerUri: ${light-config-server-uri}
+authorization: ${light_portal_authorization:}
+bootstrapCaCertPath: ${startup.bootstrapCaCertPath:/keystore/ca.pem}
+externalConfigDir: ${startup.externalConfigDir:/app/config-cache}

@@ -1,0 +1,14 @@
+# Canonical files published to deployment repositories for Knowledge database
+# creation and forward migration. Rollback scripts are intentionally excluded.
+release-manifest
+data-migration-relations-v1.txt
+ddl.sql
+operations/phase7_drop_configserver_rollback_evidence.sql
+patch_20260821_01_knowledge_admin_boundary.sql
+patch_20260821_02_canonical_knowledge_boundary.sql
+patch_20260821_03_snapshot_command_boundary.sql
+patch_20260821_04_configserver_knowledge_control_only.sql
+patch_20260821_05_admin_api.sql
+patch_20260821_06_knowledge_admin_pgcrypto.sql
+patch_20260821_07_knowledge_admin_audit_retention.sql
+roles.sql

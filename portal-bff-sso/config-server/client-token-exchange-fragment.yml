@@ -1,0 +1,11 @@
+# Merge this under client.yml -> oauth -> token. Values are supplied to the
+# container from .env.bootstrap and override these placeholders at runtime.
+token_exchange:
+  uri: ${client.tokenExUri:/oauth2/token}
+  client_id: ${client.tokenExClientId:}
+  client_secret: ${client.tokenExClientSecret:}
+  scope: ${client.tokenExScope:[]}
+  subjectToken: ${client.subjectToken:}
+  subjectTokenType: ${client.subjectTokenType:urn:ietf:params:oauth:token-type:jwt}
+  requestedTokenType: ${client.requestedTokenType:}
+  audience: ${client.tokenExAudience:}

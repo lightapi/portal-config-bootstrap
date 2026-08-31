@@ -1,0 +1,6 @@
+# Execution circuit breaker. This does not disable capture, queries, planning,
+# approval, audit, or durable replay state.
+enabled: ${event-replay.enabled:true}
+
+# Exact event type names whose projection handlers are not safe to replay.
+excludedEventTypes: ${event-replay.excludedEventTypes:}

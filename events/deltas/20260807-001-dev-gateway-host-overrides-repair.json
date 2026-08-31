@@ -1,0 +1,48 @@
+[
+  {
+    "id": "a14c256d-42f9-471f-ae7d-f10a5f05d0c6",
+    "data": {
+      "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+      "configId": "01964b05-5533-77d1-85fe-7a3bb4a516f5",
+      "instanceId": "019d2a45-4eb7-7e20-a6b6-9cc3261e89a1",
+      "propertyId": "01965b85-6185-7f06-87a8-a5aa9081a676",
+      "propertyValue": "[\"https://dev.lightapi.net\",\"https://devsignin.lightapi.net\"]",
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-08-07T19:41:24Z",
+    "type": "ConfigInstanceUpdatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019d2a45-4eb7-7e20-a6b6-9cc3261e89a1|01965b85-6185-7f06-87a8-a5aa9081a676",
+    "specversion": "1.0",
+    "aggregatetype": "ConfigInstance",
+    "commandkind": "MUTATION",
+    "datacontenttype": "application/json",
+    "aggregateversion": "2"
+  },
+  {
+    "id": "c4cfe787-e052-4173-841b-1d908a301c4f",
+    "data": {
+      "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+      "configId": "2678d1bb-07df-5aae-8000-d801fd146706",
+      "instanceId": "019d2a45-4eb7-7e20-a6b6-9cc3261e89a1",
+      "propertyId": "3b6e0fc3-a99e-50a2-afa3-92d321277948",
+      "propertyValue": "[{\"domain\":\"dev.lightapi.net\",\"path\":\"/\",\"base\":\"/lightapi/dist\",\"transferMinSize\":10245760,\"directoryListingEnabled\":false},{\"domain\":\"devsignin.lightapi.net\",\"path\":\"/\",\"base\":\"/signin/dist\",\"transferMinSize\":10245760,\"directoryListingEnabled\":false}]",
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-08-07T19:41:24Z",
+    "type": "ConfigInstanceUpdatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019d2a45-4eb7-7e20-a6b6-9cc3261e89a1|3b6e0fc3-a99e-50a2-afa3-92d321277948",
+    "specversion": "1.0",
+    "aggregatetype": "ConfigInstance",
+    "commandkind": "MUTATION",
+    "datacontenttype": "application/json",
+    "aggregateversion": "2"
+  }
+]

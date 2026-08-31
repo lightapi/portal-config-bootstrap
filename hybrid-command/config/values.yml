@@ -1,0 +1,96 @@
+server.httpsPort: 8439
+server.serviceId: com.networknt.portal.hybrid.command-1.0.0
+# overwrite environment tag to simplify the service discovery.
+server.environment: null
+
+# client.yml
+client.verifyHostname: false
+client.tokenServerUrl: https://light-oauth:6881
+client.tokenAcClientId: f7d42348-c647-4efb-a52d-4c5787421e72
+client.tokenCcClientId: f7d42348-c647-4efb-a52d-4c5787421e72
+client.tokenKeyServerUrl: https://light-oauth:6881
+client.tokenKeyUri: /oauth2/AZZRJE52eXu3t1hseacnGQ/keys
+# Client Credential
+client.tokenCcUri: /oauth2/AZZRJE52eXu3t1hseacnGQ/token
+client.tokenCcClientId: f7d42348-c647-4efb-a52d-4c5787421e72
+client.tokenCcClientSecret: f6h1FTI8Q3-7UScPZDzfXA
+client.tokenCcScope:
+  - portal.r
+  - portal.w
+
+# portal.yml
+portal.sendEmail: true
+portal.cmdHost: https://dev.lightapi.net
+portal.resetHost: https://devsignin.lightapi.net
+portal.admin: steve.hu@lightapi.net
+
+# db-provider.yml
+# For postgres database running in a docker container, you have to use the driverClassName.
+db-provider.driverClassName: org.postgresql.Driver
+db-provider.jdbcUrl: jdbc:postgresql://postgres:5432/configserver
+db-provider.username: portal_dev_runtime
+db-provider.password: secret
+db-provider.maximumPoolSize: 3
+
+# cors.yml
+cors.enabled: true
+cors.allowedOrigins:
+  - https://dev.lightapi.net
+  - https://devsignin.lightapi.net
+cors.allowedMethods:
+  - GET
+  - POST
+  - PUT
+  - DELETE
+
+
+# direct-registry.yml
+direct-registry.directUrls:
+  com.networknt.portal.hybrid.query-1.0.0: https://hybrid-query:8440
+  com.networknt.portal.hybrid.command-1.0.0: https://hybrid-command:8439
+  com.networknt.light-oauth-1.0.0: https://light-oauth:6881
+  com.networknt.reference-1.0.0: https://reference:2498
+
+# service.yml
+service.singletons:
+- com.networknt.registry.URL:
+  - com.networknt.registry.URLImpl
+- com.networknt.registry.Registry:
+  - com.networknt.registry.support.DirectRegistry
+- com.networknt.balance.LoadBalance:
+  - com.networknt.balance.RoundRobinLoadBalance
+- com.networknt.cluster.Cluster:
+  - com.networknt.cluster.LightCluster
+# PortalDbProviderImpl of DbProvider
+- com.networknt.db.provider.DbProvider:
+  - net.lightapi.portal.db.PortalDbProviderImpl
+# StartupHookProvider implementations, there are one to many and they are called in the same sequence defined.
+- com.networknt.server.StartupHookProvider:
+  # registry all service handlers by from annotations
+  - com.networknt.rpc.router.RpcStartupHookProvider
+  # database startup hook to initialize datasource and cache.
+  - com.networknt.db.provider.SqlDbStartupHook
+  # Validate reloadable event replay configuration before handlers start.
+  - net.lightapi.portal.db.EventReplayConfigStartupHook
+
+# security.yml
+security.enableVerifyJwt: true
+
+# cache.yml
+cache.caches:
+  - cacheName: jwt
+    expiryInMinutes: 15
+    maxSize: 100
+  - cacheName: jwk
+    expiryInMinutes: 129600
+    maxSize: 100
+  - cacheName: portal-data
+    expiryInMinutes: 60
+    maxSize: 1000
+  - cacheName: auth_code
+    expiryInMinutes: 5
+    maxSize: 1000
+
+# rpc-router.yml
+rpc-router.handlerPackages: net.lightapi.portal
+rpc-router.jsonPath: /portal/command

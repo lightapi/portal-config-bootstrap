@@ -1,0 +1,9 @@
+# Development environment: enabled with an overridable shared development-only HMAC key.
+enabled: true
+hmacKey: ${INSTANCE_CLONE_PLAN_HMAC_KEY:light-portal-development-only-instance-clone-hmac-key-v1}
+hmacKeyId: ${INSTANCE_CLONE_PLAN_HMAC_KEY_ID:v1}
+maxEvents: 2000
+maxSerializedEventBytes: 16777216
+maxSingleFileBytes: 4194304
+serializationRetries: 3
+serializationRetryBaseDelayMs: 25

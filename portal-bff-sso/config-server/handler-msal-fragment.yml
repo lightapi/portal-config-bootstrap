@@ -1,0 +1,37 @@
+# Merge these entries into the cloned Portal BFF handler.yml. This fragment is
+# deliberately not a complete handler.yml because the Portal routes and proxy
+# chains must be retained from the source BFF snapshot.
+handlers:
+  - exception
+  - cors
+  - msal-exchange
+  - header
+  - prefix
+  - router
+
+chains:
+  bff:
+    - exception
+    - cors
+    - msal-exchange
+    - header
+    - prefix
+    - router
+
+paths:
+  - path: /auth/ms/exchange
+    method: POST
+    exec:
+      - bff
+  - path: /auth/ms/exchange
+    method: OPTIONS
+    exec:
+      - bff
+  - path: /auth/ms/logout
+    method: POST
+    exec:
+      - bff
+  - path: /auth/ms/logout
+    method: OPTIONS
+    exec:
+      - bff

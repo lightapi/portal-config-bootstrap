@@ -1,0 +1,7 @@
+# These supported graph events are guarded only when data.entityType is instance.
+EntityTagCreatedEvent
+EntityTagUpdatedEvent
+EntityTagDeletedEvent
+EntityCategoryCreatedEvent
+EntityCategoryUpdatedEvent
+EntityCategoryDeletedEvent

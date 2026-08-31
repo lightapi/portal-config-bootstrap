@@ -1,0 +1,9 @@
+host: ${PORTAL_BFF_SSO_STARTUP_HOST:dev.yourcompany.com}
+serviceId: ${PORTAL_BFF_SSO_SERVICE_ID:com.yourcompany.portal.bff.sso-1.0.0}
+envTag: ${PORTAL_BFF_SSO_ENVIRONMENT:dev}
+acceptHeader: application/yaml
+timeout: ${LIGHT_CONFIG_SERVER_TIMEOUT:5000}
+configServerUri: ${LIGHT_CONFIG_SERVER_URI:https://config-server:8435}
+authorization: ${LIGHT_PORTAL_AUTHORIZATION:}
+bootstrapCaCertPath: ${CLIENT_CACERTPATH:/config-server-ca/ca.pem}
+externalConfigDir: ${PORTAL_BFF_SSO_EXTERNAL_CONFIG_DIR:/app/config-cache}
