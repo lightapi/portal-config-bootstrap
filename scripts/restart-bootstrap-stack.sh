@@ -15,15 +15,21 @@ usage() {
 Usage: ./scripts/restart-bootstrap-stack.sh [options]
 
 Options:
-  --recreate-database  Download the latest published events.json, preserve the
-                       current database as a timestamped backup, initialize a
-                       fresh database, and force the full baseline import.
+  --recreate-database  Download and verify the latest signed events.zip,
+                       preserve the current database as a timestamped backup,
+                       initialize a fresh database, and force the full baseline
+                       import.
   -h, --help           Show this help.
 
 Environment overrides for --recreate-database:
   BOOTSTRAP_EVENTS_ARCHIVE_URL  Default: https://cdn.networknt.com/events.zip
   BOOTSTRAP_EVENTS_FILE         Default: <repo>/data/events.json
   BOOTSTRAP_POSTGRES_DATA_DIR   Default: <repo>/postgres-db/data
+  EVENT_BUNDLE_KEY_DIR          Trusted public keys named <keyId>.pem. Default:
+                                <repo>/release-keys
+  BOOTSTRAP_EVENTS_REQUIRE_BUNDLE_MATCH
+                                Also require an adjacent verified bundle digest
+                                for a non-default BOOTSTRAP_EVENTS_FILE.
   EVENT_IMPORT_PHYSICAL_CHUNK_EVENTS
                           Physical commits may contain this many singleton
                           transactions. Default: 1; qualification maximum: 500
@@ -104,12 +110,13 @@ validate_sso_assets() {
   local required_file
   local required_var
   local required_value
+  local sso_asset_root="${BOOTSTRAP_SSO_ASSET_ROOT:-$repo_dir/portal-bff-sso}"
 
   for required_file in \
-    "$repo_dir/portal-bff-sso/tls/ca.pem" \
-    "$repo_dir/portal-bff-sso/tls/cert.pem" \
-    "$repo_dir/portal-bff-sso/tls/key.pem" \
-    "$repo_dir/portal-bff-sso/lightapi/dist/index.html"; do
+    "$sso_asset_root/tls/ca.pem" \
+    "$sso_asset_root/tls/cert.pem" \
+    "$sso_asset_root/tls/key.pem" \
+    "$sso_asset_root/lightapi/dist/index.html"; do
     [[ -s "$required_file" ]] || die "required SSO asset is missing: $required_file"
   done
 
@@ -150,6 +157,71 @@ default_event_import_network() {
 
 event_store_count() {
   docker exec postgres psql -h localhost -p 5432 -U postgres -d configserver -tAc "select count(*) from event_store_t;" 2>/dev/null | tr -d '[:space:]'
+}
+
+verify_baseline_bundle() {
+  local events_bundle="$1"
+  local bundle_key_dir="${EVENT_BUNDLE_KEY_DIR:-$repo_dir/release-keys}"
+  local importer_image
+
+  [[ "$events_bundle" == /* ]] || events_bundle="$repo_dir/$events_bundle"
+  [[ "$bundle_key_dir" == /* ]] || bundle_key_dir="$repo_dir/$bundle_key_dir"
+  [[ -f "$events_bundle" ]] || die "signed baseline bundle is missing: $events_bundle"
+  [[ -d "$bundle_key_dir" ]] || die "trusted bundle key directory is missing: $bundle_key_dir"
+
+  load_env_file_var EVENT_IMPORTER_IMAGE
+  importer_image="${EVENT_IMPORTER_IMAGE:-networknt/event-importer:latest}"
+  log "verifying signed baseline bundle before extraction"
+  docker run --rm \
+    -v "$(dirname -- "$events_bundle"):/bundle:ro,z" \
+    -v "$bundle_key_dir:/bundle-keys:ro,z" \
+    "$importer_image" \
+    --verify-bundle \
+    --bundle "/bundle/$(basename -- "$events_bundle")" \
+    --bundle-key-dir /bundle-keys ||
+    die "signed baseline bundle verification failed"
+}
+
+record_verified_bundle_digest() {
+  local events_bundle="$1"
+  local events_file="$2"
+  local digest_file="${BOOTSTRAP_EVENTS_SOURCE_BUNDLE_SHA256_FILE:-$events_file.source-bundle.sha256}"
+  local bundle_digest
+
+  bundle_digest="$(sha256sum "$events_bundle" | awk '{print $1}')"
+  [[ "$bundle_digest" =~ ^[0-9a-f]{64}$ ]] ||
+    die "cannot calculate the verified bundle digest: $events_bundle"
+  printf '%s\n' "$bundle_digest" > "$digest_file.tmp"
+  mv "$digest_file.tmp" "$digest_file"
+}
+
+require_matching_verified_bundle() {
+  local events_file="$1"
+  local default_events_file="$repo_dir/data/events.json"
+  local events_bundle
+  local digest_file
+  local expected_digest
+  local actual_digest
+
+  [[ "$events_file" == /* ]] || events_file="$repo_dir/$events_file"
+  if [[ "$events_file" != "$default_events_file" &&
+        ! "${BOOTSTRAP_EVENTS_REQUIRE_BUNDLE_MATCH:-false}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
+    return 0
+  fi
+
+  events_bundle="${BOOTSTRAP_EVENTS_BUNDLE:-$(dirname -- "$events_file")/events.zip}"
+  [[ "$events_bundle" == /* ]] || events_bundle="$repo_dir/$events_bundle"
+  digest_file="${BOOTSTRAP_EVENTS_SOURCE_BUNDLE_SHA256_FILE:-$events_file.source-bundle.sha256}"
+  [[ "$digest_file" == /* ]] || digest_file="$repo_dir/$digest_file"
+
+  [[ -f "$events_bundle" ]] || die "verified source bundle is missing: $events_bundle"
+  [[ -f "$digest_file" ]] || die "verified source-bundle digest is missing: $digest_file"
+  expected_digest="$(tr -d '[:space:]' < "$digest_file")"
+  [[ "$expected_digest" =~ ^[0-9a-f]{64}$ ]] ||
+    die "verified source-bundle digest is invalid: $digest_file"
+  actual_digest="$(sha256sum "$events_bundle" | awk '{print $1}')"
+  [[ "$actual_digest" == "$expected_digest" ]] ||
+    die "baseline events source bundle no longer matches its verified digest; recreate the editable baseline"
 }
 
 replace_literal_in_file() {
@@ -215,6 +287,7 @@ import_baseline_events_if_needed() {
   fi
 
   [[ -f "$events_file" ]] || die "baseline events file is missing: $events_file"
+  require_matching_verified_bundle "$events_file"
   normalize_events_json "$events_file"
 
   load_env_file_var EVENT_IMPORTER_IMAGE
@@ -251,9 +324,10 @@ import_baseline_events_if_needed() {
 
 prepare_operational_database_secret() {
   local prepare_script="$repo_dir/postgres-db/operations/bin/prepare-operational-secret.sh"
+  local secret_dir="${BOOTSTRAP_OPERATIONAL_SECRET_DIR:-$repo_dir/postgres-db/secrets}"
 
   [[ -x "$prepare_script" ]] || die "operational database secret initializer is missing: $prepare_script"
-  OPERATIONAL_SECRET_DIR="$repo_dir/postgres-db/secrets" "$prepare_script" >/dev/null
+  OPERATIONAL_SECRET_DIR="$secret_dir" "$prepare_script" >/dev/null
   log "operational database URL file is ready (content redacted)"
 }
 
@@ -315,6 +389,7 @@ recreate_database_from_latest_events() {
 
   command -v curl >/dev/null 2>&1 || die "curl is required to recreate the database"
   command -v unzip >/dev/null 2>&1 || die "unzip is required to recreate the database"
+  command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required to recreate the database"
 
   if [[ "$postgres_data_dir" != /* ]]; then
     postgres_data_dir="$repo_dir/$postgres_data_dir"
@@ -341,12 +416,14 @@ recreate_database_from_latest_events() {
   log "downloading latest baseline events from $archive_request_url"
   curl -fsSL "$archive_request_url" -o "$archive_tmp" ||
     die "failed to download baseline events archive: $archive_request_url"
+  verify_baseline_bundle "$archive_tmp"
   mv "$archive_tmp" "$archive_file"
 
   unzip -p "$archive_file" events.json > "$events_tmp" ||
     die "failed to extract events.json from $archive_file"
   [[ -s "$events_tmp" ]] || die "extracted events.json is empty"
   mv "$events_tmp" "$events_file"
+  record_verified_bundle_digest "$archive_file" "$events_file"
   log "latest baseline installed at $events_file"
 
   log "stopping the current stack before replacing the database"

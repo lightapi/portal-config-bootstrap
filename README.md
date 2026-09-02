@@ -110,6 +110,16 @@ For an initial database recreation from the current CDN baseline:
 ./scripts/restart-bootstrap-stack.sh --recreate-database
 ```
 
+The recreation command verifies the signed `events.zip` with the pinned
+Ed25519 public key in `release-keys/<keyId>.pem` before extracting `events.json`
+or stopping the existing database. The repository ships the current release
+key. A controlled deployment may set `EVENT_BUNDLE_KEY_DIR` to another
+independently provisioned trust directory. Never download the trusted key from
+the same CDN location as the bundle it verifies. The extracted editable JSON
+records the verified archive digest in
+`data/events.json.source-bundle.sha256`; a later import fails if the adjacent
+archive no longer matches that marker.
+
 The inherited recreation path moves the old PostgreSQL data directory to a
 timestamped backup before rebuilding it. Until the host-scoped export/import
 workflow below is automated and qualified, do not schedule this command on a
