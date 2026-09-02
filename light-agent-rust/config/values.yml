@@ -26,18 +26,21 @@ mcp-client.timeoutMs: 10000
 client.verifyHostname: false
 client.caCertPath: /keystore/ca.pem
 
-operationalStore.contractVersion: 1
-operationalStore.bindingId: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
-operationalStore.bindingDigest: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+operationalStore.contractVersion: 2
+operationalStore.bindingId: 01a06356-a4aa-7528-838e-dfbbe90ec959
+operationalStore.bindingDigest: sha256:79a39f6ff78c336d6ac9b0dc711115750bf22be954c584fa836930150e3db09e
 operationalStore.profileId: dev-dev-dedicated
-operationalStore.deploymentProfile: DEV_DEDICATED
-operationalStore.scopeKind: HOST_ENVIRONMENT
+operationalStore.deploymentProfile: CUSTOMER_MANAGED
+operationalStore.scopeKind: HOST
 operationalStore.scopeId: 01964b05-552a-7c4b-9184-6857e7f3dc5f
 operationalStore.hostId: 01964b05-552a-7c4b-9184-6857e7f3dc5f
 operationalStore.environment: dev
+operationalStore.serverHost: postgres
+operationalStore.port: 5432
+operationalStore.tlsMode: DISABLE
 operationalStore.serviceOwner: light-agent
 operationalStore.schema: agent_ops
-operationalStore.minimumSchemaVersion: 1
+operationalStore.minimumSchemaVersion: 2
 operationalStore.expectedDatabase: operations
 operationalStore.databaseUrlFile: /run/secrets/operational-database-url
 operationalStore.credentialGeneration: 1

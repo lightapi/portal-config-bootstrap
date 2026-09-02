@@ -48,16 +48,21 @@ default_event_import_network() {
 
 verify_delta_applied() {
   local delta="$1"
-  local expected_json
-
-  expected_json="$(<"$delta")"
 
   [[ -f "$verify_delta_sql" ]] || die "event delta verification SQL is missing: $verify_delta_sql"
 
-  docker exec -i postgres psql \
-    -h localhost -p 5432 -U postgres -d configserver \
-    -v ON_ERROR_STOP=1 \
-    -v "expected_json=$expected_json" < "$verify_delta_sql"
+  {
+    printf '%s\n' \
+      'CREATE TEMP TABLE expected_delta_input_t (payload_base64 TEXT NOT NULL);' \
+      'COPY expected_delta_input_t (payload_base64) FROM STDIN;'
+    base64 < "$delta" | tr -d '\n'
+    printf '\n\\.\n'
+    printf '%s\n' \
+      "SELECT convert_from(decode(payload_base64, 'base64'), 'UTF8') AS expected_json FROM expected_delta_input_t \\gset"
+    cat "$verify_delta_sql"
+  } | docker exec -i postgres psql \
+        -h localhost -p 5432 -U postgres -d configserver \
+        -v ON_ERROR_STOP=1
 }
 
 is_superseded_delta() {

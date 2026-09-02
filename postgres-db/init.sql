@@ -15852,6 +15852,43 @@ COMMENT ON COLUMN public.event_replay_retention_log_t.created_ts IS 'Timestamp f
 
 
 --
+-- Name: bundle_import_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bundle_import_t (
+    bundle_id uuid NOT NULL,
+    bundle_mode character varying(32) NOT NULL,
+    identity_digest character varying(71) NOT NULL,
+    required_baseline_bundle_id uuid,
+    import_status character varying(16) DEFAULT 'IN_PROGRESS'::character varying NOT NULL,
+    started_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    completed_ts timestamp with time zone,
+    CONSTRAINT bundle_import_t_pkey PRIMARY KEY (bundle_id),
+    CONSTRAINT bundle_import_mode_ck CHECK (((bundle_mode)::text = ANY ((ARRAY['environment'::character varying, 'host-delta'::character varying, 'standalone-host'::character varying])::text[]))),
+    CONSTRAINT bundle_import_digest_ck CHECK (((identity_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT bundle_import_status_ck CHECK (((import_status)::text = ANY ((ARRAY['IN_PROGRESS'::character varying, 'COMPLETE'::character varying])::text[]))),
+    CONSTRAINT bundle_import_completion_ck CHECK ((((import_status)::text = 'COMPLETE'::text) = (completed_ts IS NOT NULL))),
+    CONSTRAINT bundle_import_baseline_ck CHECK (((((bundle_mode)::text = ANY ((ARRAY['environment'::character varying, 'standalone-host'::character varying])::text[])) AND (required_baseline_bundle_id IS NULL)) OR (((bundle_mode)::text = 'host-delta'::text) AND (required_baseline_bundle_id IS NOT NULL)))),
+    CONSTRAINT bundle_import_baseline_fk FOREIGN KEY (required_baseline_bundle_id) REFERENCES public.bundle_import_t(bundle_id)
+);
+
+
+--
+-- Name: TABLE bundle_import_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.bundle_import_t IS 'Records signed composable bundle imports so host deltas can prove their required environment baseline before append.';
+
+COMMENT ON COLUMN public.bundle_import_t.bundle_id IS 'Signed bundle identifier from bundle-manifest.json.';
+COMMENT ON COLUMN public.bundle_import_t.bundle_mode IS 'Explicit bundle mode: environment, host-delta, or non-composable standalone-host.';
+COMMENT ON COLUMN public.bundle_import_t.identity_digest IS 'Canonical full baseline identity-set SHA-256 used for composition qualification.';
+COMMENT ON COLUMN public.bundle_import_t.required_baseline_bundle_id IS 'Completed environment bundle required before this host delta may append.';
+COMMENT ON COLUMN public.bundle_import_t.import_status IS 'Importer lifecycle state: IN_PROGRESS or COMPLETE.';
+COMMENT ON COLUMN public.bundle_import_t.started_ts IS 'Timestamp when the coordinated importer registered the signed bundle.';
+COMMENT ON COLUMN public.bundle_import_t.completed_ts IS 'Timestamp when all canonical bundle events became durable.';
+
+
+--
 -- Name: event_store_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -44866,6 +44903,8 @@ VALUES
     ('public', 'user_t', 'public', 'user_row_filter_t', 'user_row_filter_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship')
 ;
 
+-- Schema-owned deployment metadata; event projection would leave the FK
+-- registry temporarily invalid during a fresh install or forward migration.
 INSERT INTO public.cascade_relationship_policy_t (
     parent_schema,
     parent_table,
@@ -45006,7 +45045,7 @@ CREATE TABLE public.agent_a2a_publication_t (
     CONSTRAINT agent_a2a_publication_binding_fk FOREIGN KEY(host_id,a2a_binding_id) REFERENCES public.agent_a2a_binding_t(host_id,a2a_binding_id) ON DELETE CASCADE,
     CONSTRAINT agent_a2a_publication_version_uk UNIQUE(host_id,a2a_binding_id,publication_version),
     CONSTRAINT agent_a2a_publication_version_ck CHECK(publication_version>0 AND aggregate_version>0),
-    CONSTRAINT agent_a2a_publication_state_ck CHECK(publication_state IN ('STAGED','ACTIVE','REVOKED','EXPIRED','REJECTED')),
+    CONSTRAINT agent_a2a_publication_state_ck CHECK(publication_state IN ('PREPARED','STAGED','ACTIVE','REVOKED','EXPIRED','REJECTED')),
     CONSTRAINT agent_a2a_publication_content_digest_ck CHECK(content_digest ~ '^sha256:[0-9a-f]{64}$'),
     CONSTRAINT agent_a2a_publication_policy_digest_ck CHECK(policy_digest ~ '^sha256:[0-9a-f]{64}$'),
     CONSTRAINT agent_a2a_publication_manifest_ck CHECK(jsonb_typeof(manifest)='object'),
@@ -45056,6 +45095,348 @@ COMMENT ON TABLE public.agent_a2a_binding_t IS 'Structured, editable A2A binding
 COMMENT ON TABLE public.agent_a2a_publication_t IS 'Immutable digest-bound A2A publication and audience-specific Config Server projections.';
 COMMENT ON TABLE public.agent_a2a_instance_publication_t IS 'Application, acknowledgement, and rollback evidence for one runtime audience.';
 
+-- Phase 2 A2A normalized Portal authoring. Immutable runtime values remain in
+-- agent_a2a_publication_t and Config Server snapshots.
+CREATE TABLE public.a2a_provider_profile_t (
+    host_id uuid NOT NULL,
+    provider_profile_id uuid NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    provider_name character varying(126) NOT NULL,
+    provider_url character varying(1024),
+    documentation_url character varying(1024),
+    icon_url character varying(1024),
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_provider_profile_t_pkey PRIMARY KEY(host_id,provider_profile_id),
+    CONSTRAINT a2a_provider_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
+    CONSTRAINT a2a_provider_profile_name_uk UNIQUE(host_id,profile_name),
+    CONSTRAINT a2a_provider_profile_version_ck CHECK(aggregate_version>0),
+    CONSTRAINT a2a_provider_profile_urls_ck CHECK((provider_url IS NULL OR provider_url ~ '^https://') AND (documentation_url IS NULL OR documentation_url ~ '^https://') AND (icon_url IS NULL OR icon_url ~ '^https://'))
+);
+
+CREATE TABLE public.agent_a2a_public_metadata_t (
+    host_id uuid NOT NULL,
+    public_metadata_id uuid NOT NULL,
+    agent_def_id uuid NOT NULL,
+    provider_profile_id uuid,
+    display_name character varying(126),
+    description character varying(2000),
+    documentation_url character varying(1024),
+    icon_url character varying(1024),
+    semantic_version character varying(64),
+    source_provenance jsonb DEFAULT '{}'::jsonb NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT agent_a2a_public_metadata_t_pkey PRIMARY KEY(host_id,public_metadata_id),
+    CONSTRAINT agent_a2a_public_metadata_agent_fk FOREIGN KEY(host_id,agent_def_id) REFERENCES public.agent_definition_t(host_id,agent_def_id) ON DELETE CASCADE,
+    CONSTRAINT agent_a2a_public_metadata_provider_fk FOREIGN KEY(host_id,provider_profile_id) REFERENCES public.a2a_provider_profile_t(host_id,provider_profile_id) ON DELETE RESTRICT,
+    CONSTRAINT agent_a2a_public_metadata_agent_uk UNIQUE(host_id,agent_def_id),
+    CONSTRAINT agent_a2a_public_metadata_sources_ck CHECK(jsonb_typeof(source_provenance)='object'),
+    CONSTRAINT agent_a2a_public_metadata_version_ck CHECK(aggregate_version>0),
+    CONSTRAINT agent_a2a_public_metadata_urls_ck CHECK((documentation_url IS NULL OR documentation_url ~ '^https://') AND (icon_url IS NULL OR icon_url ~ '^https://'))
+);
+
+CREATE TABLE public.a2a_extension_t (
+    host_id uuid NOT NULL,
+    extension_id uuid NOT NULL,
+    extension_uri character varying(1024) NOT NULL,
+    extension_version character varying(64) NOT NULL,
+    description character varying(2000),
+    schema_document jsonb DEFAULT '{}'::jsonb NOT NULL,
+    dependency_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    activation_state character varying(16) DEFAULT 'DRAFT' NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_extension_t_pkey PRIMARY KEY(host_id,extension_id),
+    CONSTRAINT a2a_extension_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
+    CONSTRAINT a2a_extension_uri_version_uk UNIQUE(host_id,extension_uri,extension_version),
+    CONSTRAINT a2a_extension_uri_ck CHECK(extension_uri ~ '^https://'),
+    CONSTRAINT a2a_extension_schema_ck CHECK(jsonb_typeof(schema_document)='object'),
+    CONSTRAINT a2a_extension_dependencies_ck CHECK(jsonb_typeof(dependency_ids)='array'),
+    CONSTRAINT a2a_extension_initial_state_ck CHECK(activation_state IN ('DRAFT','OPTIONAL_DATA','DISABLED')),
+    CONSTRAINT a2a_extension_version_ck CHECK(aggregate_version>0)
+);
+
+CREATE TABLE public.a2a_extended_card_profile_t (
+    host_id uuid NOT NULL,
+    extended_card_profile_id uuid NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    authorization_policy_digest character varying(71) NOT NULL,
+    allowed_principal_prefixes jsonb NOT NULL,
+    card_document jsonb NOT NULL,
+    profile_state character varying(16) NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_extended_card_profile_t_pkey PRIMARY KEY(host_id,extended_card_profile_id),
+    CONSTRAINT a2a_extended_card_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
+    CONSTRAINT a2a_extended_card_profile_name_uk UNIQUE(host_id,profile_name),
+    CONSTRAINT a2a_extended_card_profile_policy_ck CHECK(authorization_policy_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT a2a_extended_card_profile_principals_ck CHECK(jsonb_typeof(allowed_principal_prefixes)='array' AND jsonb_array_length(allowed_principal_prefixes)>0),
+    CONSTRAINT a2a_extended_card_profile_card_ck CHECK(jsonb_typeof(card_document)='object'),
+    CONSTRAINT a2a_extended_card_profile_state_ck CHECK(profile_state IN ('APPROVED','DISABLED')),
+    CONSTRAINT a2a_extended_card_profile_version_ck CHECK(aggregate_version>0)
+);
+
+CREATE TABLE public.a2a_push_profile_t (
+    host_id uuid NOT NULL,
+    push_profile_id uuid NOT NULL,
+    environment character varying(32) NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    maximum_attempts bigint NOT NULL,
+    initial_backoff_seconds bigint NOT NULL,
+    maximum_backoff_seconds bigint NOT NULL,
+    lease_seconds bigint NOT NULL,
+    request_timeout_ms bigint NOT NULL,
+    profile_state character varying(16) NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_push_profile_t_pkey PRIMARY KEY(host_id,push_profile_id),
+    CONSTRAINT a2a_push_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
+    CONSTRAINT a2a_push_profile_name_uk UNIQUE(host_id,environment,profile_name),
+    CONSTRAINT a2a_push_profile_bounds_ck CHECK(maximum_attempts BETWEEN 1 AND 100 AND initial_backoff_seconds BETWEEN 1 AND 86400 AND maximum_backoff_seconds BETWEEN initial_backoff_seconds AND 86400 AND lease_seconds BETWEEN 1 AND 300 AND request_timeout_ms BETWEEN 1 AND 300000 AND request_timeout_ms + 5000 <= lease_seconds * 1000),
+    CONSTRAINT a2a_push_profile_state_ck CHECK(profile_state IN ('APPROVED','DISABLED')),
+    CONSTRAINT a2a_push_profile_version_ck CHECK(aggregate_version>0)
+);
+
+CREATE TABLE public.a2a_callback_registration_t (
+    host_id uuid NOT NULL,
+    callback_registration_id uuid NOT NULL,
+    push_profile_id uuid NOT NULL,
+    registration_name character varying(126) NOT NULL,
+    callback_url character varying(2048) NOT NULL,
+    owner_principal_prefixes jsonb NOT NULL,
+    hmac_key_file character varying(1024) NOT NULL,
+    registration_state character varying(16) NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_callback_registration_t_pkey PRIMARY KEY(host_id,callback_registration_id),
+    CONSTRAINT a2a_callback_registration_profile_fk FOREIGN KEY(host_id,push_profile_id) REFERENCES public.a2a_push_profile_t(host_id,push_profile_id) ON DELETE CASCADE,
+    CONSTRAINT a2a_callback_registration_name_uk UNIQUE(host_id,push_profile_id,registration_name),
+    CONSTRAINT a2a_callback_registration_url_uk UNIQUE(host_id,push_profile_id,callback_url),
+    CONSTRAINT a2a_callback_registration_url_ck CHECK(callback_url ~ '^https://[^[:space:]?#]+(/[^[:space:]?#]*)?$'),
+    CONSTRAINT a2a_callback_registration_owner_ck CHECK(jsonb_typeof(owner_principal_prefixes)='array' AND jsonb_array_length(owner_principal_prefixes)>0),
+    CONSTRAINT a2a_callback_registration_key_ck CHECK(hmac_key_file ~ '^/[^[:space:]]+$' AND hmac_key_file !~* '(password=|secret=|-----BEGIN)'),
+    CONSTRAINT a2a_callback_registration_state_ck CHECK(registration_state IN ('APPROVED','DISABLED')),
+    CONSTRAINT a2a_callback_registration_version_ck CHECK(aggregate_version>0)
+);
+
+CREATE TABLE public.a2a_artifact_retention_profile_t (
+    host_id uuid NOT NULL,
+    retention_profile_id uuid NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    task_retention_days integer NOT NULL,
+    artifact_retention_days integer NOT NULL,
+    maximum_artifact_bytes bigint NOT NULL,
+    access_policy_ref character varying(256) NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_artifact_retention_profile_t_pkey PRIMARY KEY(host_id,retention_profile_id),
+    CONSTRAINT a2a_artifact_retention_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
+    CONSTRAINT a2a_artifact_retention_name_uk UNIQUE(host_id,profile_name),
+    CONSTRAINT a2a_artifact_retention_bounds_ck CHECK(task_retention_days BETWEEN 1 AND 3650 AND artifact_retention_days BETWEEN 1 AND 3650 AND maximum_artifact_bytes BETWEEN 1 AND 1099511627776),
+    CONSTRAINT a2a_artifact_retention_policy_ck CHECK(length(btrim(access_policy_ref))>0),
+    CONSTRAINT a2a_artifact_retention_version_ck CHECK(aggregate_version>0)
+);
+
+CREATE TABLE public.a2a_signing_profile_t (
+    host_id uuid NOT NULL,
+    signing_profile_id uuid NOT NULL,
+    environment character varying(32) NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    purpose character varying(32) NOT NULL,
+    algorithm character varying(16) NOT NULL,
+    jwks_url character varying(1024) NOT NULL,
+    managed_key_alias character varying(512) NOT NULL,
+    rotation_policy jsonb DEFAULT '{}'::jsonb NOT NULL,
+    revocation_epoch bigint DEFAULT 0 NOT NULL,
+    is_default boolean DEFAULT false NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_signing_profile_t_pkey PRIMARY KEY(host_id,signing_profile_id),
+    CONSTRAINT a2a_signing_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
+    CONSTRAINT a2a_signing_profile_name_uk UNIQUE(host_id,environment,profile_name),
+    CONSTRAINT a2a_signing_profile_purpose_ck CHECK(purpose IN ('A2A_CARD_NATIVE','A2A_CARD_EXTERNAL_FACADE')),
+    CONSTRAINT a2a_signing_profile_algorithm_ck CHECK(algorithm='RS256'),
+    CONSTRAINT a2a_signing_profile_jwks_ck CHECK(jwks_url ~ '^https://'),
+    CONSTRAINT a2a_signing_profile_alias_ck CHECK(length(btrim(managed_key_alias))>0 AND managed_key_alias !~* '(private.?key|password|secret=|-----BEGIN)'),
+    CONSTRAINT a2a_signing_profile_rotation_ck CHECK(jsonb_typeof(rotation_policy)='object'),
+    CONSTRAINT a2a_signing_profile_version_ck CHECK(revocation_epoch>=0 AND aggregate_version>0)
+);
+CREATE UNIQUE INDEX a2a_signing_profile_default_uk ON public.a2a_signing_profile_t(host_id,environment,purpose) WHERE active AND is_default;
+
+CREATE TABLE public.a2a_signing_key_t (
+    host_id uuid NOT NULL,
+    signing_profile_id uuid NOT NULL,
+    kid character varying(256) NOT NULL,
+    public_jwk jsonb NOT NULL,
+    private_key_ref character varying(1024) NOT NULL,
+    key_state character varying(16) NOT NULL,
+    valid_from timestamp with time zone NOT NULL,
+    valid_until timestamp with time zone,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_signing_key_t_pkey PRIMARY KEY(host_id,signing_profile_id,kid),
+    CONSTRAINT a2a_signing_key_profile_fk FOREIGN KEY(host_id,signing_profile_id) REFERENCES public.a2a_signing_profile_t(host_id,signing_profile_id) ON DELETE CASCADE,
+    CONSTRAINT a2a_signing_key_public_ck CHECK(jsonb_typeof(public_jwk)='object' AND public_jwk->>'kid'=kid AND public_jwk->>'kty'='RSA' AND public_jwk->>'alg'='RS256' AND length(COALESCE(public_jwk->>'n',''))>0 AND length(COALESCE(public_jwk->>'e',''))>0),
+    CONSTRAINT a2a_signing_key_private_ref_ck CHECK(private_key_ref ~ '^managed:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'),
+    CONSTRAINT a2a_signing_key_state_ck CHECK(key_state IN ('CURRENT','PREVIOUS','REVOKED')),
+    CONSTRAINT a2a_signing_key_validity_ck CHECK(valid_until IS NULL OR valid_until>valid_from),
+    CONSTRAINT a2a_signing_key_version_ck CHECK(aggregate_version>0)
+);
+CREATE UNIQUE INDEX a2a_signing_key_current_uk ON public.a2a_signing_key_t(host_id,signing_profile_id) WHERE active AND key_state='CURRENT';
+
+CREATE TABLE public.skill_publication_alias_t (
+    host_id uuid NOT NULL,
+    publication_alias character varying(128) NOT NULL,
+    skill_id uuid NOT NULL,
+    skill_version character varying(20) NOT NULL,
+    skill_digest character varying(71) NOT NULL,
+    first_publication_id uuid,
+    frozen boolean DEFAULT false NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT skill_publication_alias_t_pkey PRIMARY KEY(host_id,publication_alias),
+    CONSTRAINT skill_publication_alias_skill_fk FOREIGN KEY(host_id,skill_id) REFERENCES public.skill_t(host_id,skill_id) ON DELETE RESTRICT,
+    CONSTRAINT skill_publication_alias_skill_uk UNIQUE(host_id,skill_id),
+    CONSTRAINT skill_publication_alias_shape_ck CHECK(publication_alias ~ '^[a-z0-9][a-z0-9._-]{0,127}$'),
+    CONSTRAINT skill_publication_alias_digest_ck CHECK(skill_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT skill_publication_alias_version_ck CHECK(aggregate_version>0)
+);
+
+ALTER TABLE public.agent_a2a_binding_t
+    ADD COLUMN public_metadata_id uuid,
+    ADD COLUMN retention_profile_id uuid,
+    ADD COLUMN signing_profile_id uuid,
+    ADD COLUMN allowed_hosts jsonb NOT NULL,
+    ADD COLUMN retention_override jsonb DEFAULT '{}'::jsonb NOT NULL,
+    ADD COLUMN extension_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    ADD COLUMN extended_card_profile_id uuid,
+    ADD COLUMN push_profile_id uuid,
+    ADD CONSTRAINT agent_a2a_binding_public_metadata_fk FOREIGN KEY(host_id,public_metadata_id) REFERENCES public.agent_a2a_public_metadata_t(host_id,public_metadata_id) ON DELETE RESTRICT,
+    ADD CONSTRAINT agent_a2a_binding_retention_profile_fk FOREIGN KEY(host_id,retention_profile_id) REFERENCES public.a2a_artifact_retention_profile_t(host_id,retention_profile_id) ON DELETE RESTRICT,
+    ADD CONSTRAINT agent_a2a_binding_signing_profile_fk FOREIGN KEY(host_id,signing_profile_id) REFERENCES public.a2a_signing_profile_t(host_id,signing_profile_id) ON DELETE RESTRICT,
+    ADD CONSTRAINT agent_a2a_binding_extended_card_profile_fk FOREIGN KEY(host_id,extended_card_profile_id) REFERENCES public.a2a_extended_card_profile_t(host_id,extended_card_profile_id) ON DELETE RESTRICT,
+    ADD CONSTRAINT agent_a2a_binding_push_profile_fk FOREIGN KEY(host_id,push_profile_id) REFERENCES public.a2a_push_profile_t(host_id,push_profile_id) ON DELETE RESTRICT,
+    ADD CONSTRAINT agent_a2a_binding_retention_override_ck CHECK(jsonb_typeof(retention_override)='object'),
+    ADD CONSTRAINT agent_a2a_binding_allowed_hosts_ck CHECK(jsonb_typeof(allowed_hosts)='array' AND jsonb_array_length(allowed_hosts) BETWEEN 1 AND 32),
+    ADD CONSTRAINT agent_a2a_binding_extensions_ck CHECK(jsonb_typeof(extension_ids)='array' AND jsonb_array_length(extension_ids)<=8);
+
+INSERT INTO public.cascade_relationship_policy_t (
+    parent_schema,parent_table,child_schema,child_table,constraint_name,delete_action,restore_action,policy_description
+) VALUES
+    ('public','host_t','public','a2a_provider_profile_t','a2a_provider_profile_host_fk','IGNORE','NONE','A2A provider profiles are command-owned host records'),
+    ('public','host_t','public','a2a_extension_t','a2a_extension_host_fk','IGNORE','NONE','A2A extension registry is command-owned host state'),
+    ('public','host_t','public','a2a_artifact_retention_profile_t','a2a_artifact_retention_host_fk','IGNORE','NONE','A2A retention profiles are command-owned host state'),
+    ('public','host_t','public','a2a_signing_profile_t','a2a_signing_profile_host_fk','IGNORE','NONE','A2A signing profiles are command-owned host state')
+    ,('public','host_t','public','a2a_extended_card_profile_t','a2a_extended_card_profile_host_fk','IGNORE','NONE','A2A extended-card profiles are command-owned host state')
+    ,('public','host_t','public','a2a_push_profile_t','a2a_push_profile_host_fk','IGNORE','NONE','A2A push profiles are command-owned host state')
+    ,('public','a2a_push_profile_t','public','a2a_callback_registration_t','a2a_callback_registration_profile_fk','IGNORE','NONE','Callback registrations are separately command-owned; the FK cascade is reset-only')
+ON CONFLICT (parent_schema,parent_table,child_schema,child_table,constraint_name) DO UPDATE SET
+    delete_action=EXCLUDED.delete_action,restore_action=EXCLUDED.restore_action,
+    policy_description=EXCLUDED.policy_description,update_user=SESSION_USER,update_ts=CURRENT_TIMESTAMP;
+
+COMMENT ON TABLE public.a2a_provider_profile_t IS 'Reusable Portal-authored public provider identity for Agent Cards.';
+COMMENT ON TABLE public.agent_a2a_public_metadata_t IS 'Version-scoped Agent Card metadata overrides with source provenance.';
+COMMENT ON TABLE public.a2a_extension_t IS 'Managed A2A extension registry; Phase 6 permits only reviewed OPTIONAL_DATA activation.';
+COMMENT ON TABLE public.a2a_extended_card_profile_t IS 'Independently authorized and signed extended Agent Card disclosure profile.';
+COMMENT ON TABLE public.a2a_push_profile_t IS 'Bounded retry and lease policy for governed A2A push delivery.';
+COMMENT ON TABLE public.a2a_callback_registration_t IS 'Approved callback destination and server-owned HMAC key-file reference; callers cannot add destinations.';
+COMMENT ON TABLE public.a2a_artifact_retention_profile_t IS 'Host-scoped A2A task and artifact retention policy linked to existing fine-grained access policy.';
+COMMENT ON TABLE public.a2a_signing_profile_t IS 'Purpose-separated A2A Agent Card issuer identity; OAuth token keys are never eligible.';
+COMMENT ON TABLE public.a2a_signing_key_t IS 'Public key lifecycle and private-key provider reference for an A2A signing profile.';
+COMMENT ON TABLE public.skill_publication_alias_t IS 'Stable opaque public Skill identity immutably mapped to one Portal Skill.';
+
+-- Phase 3: approved fixed-loopback transport profiles for external business
+-- agents. Secret material is mounted at runtime; only a secret file reference
+-- is control-plane state.
+CREATE TABLE public.a2a_backend_transport_profile_t (
+    host_id uuid NOT NULL,
+    backend_transport_profile_id uuid NOT NULL,
+    environment character varying(32) NOT NULL,
+    profile_name character varying(128) NOT NULL,
+    contract_version character varying(64) NOT NULL,
+    contract_digest character varying(71) NOT NULL,
+    loopback_origin character varying(256) NOT NULL,
+    audience character varying(256) NOT NULL,
+    context_key_file character varying(512) NOT NULL,
+    data_boundary_digest character varying(71) NOT NULL,
+    request_timeout_ms bigint NOT NULL,
+    maximum_request_bytes bigint NOT NULL,
+    maximum_response_bytes bigint NOT NULL,
+    capabilities jsonb NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_backend_transport_profile_t_pkey PRIMARY KEY(host_id,backend_transport_profile_id),
+    CONSTRAINT a2a_backend_transport_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
+    CONSTRAINT a2a_backend_transport_profile_name_uk UNIQUE(host_id,environment,profile_name),
+    CONSTRAINT a2a_backend_transport_profile_contract_ck CHECK(contract_version='light-a2a-backend/v1' AND contract_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT a2a_backend_transport_profile_origin_ck CHECK(
+        loopback_origin ~ '^http://(127\.0\.0\.1|localhost|\[::1\]):[1-9][0-9]{0,4}/$'
+        AND (substring(loopback_origin FROM ':([0-9]{1,5})/$'))::integer BETWEEN 1 AND 65535
+    ),
+    CONSTRAINT a2a_backend_transport_profile_key_ck CHECK(context_key_file ~ '^/run/secrets/[A-Za-z0-9._-]+$' AND context_key_file !~ '(^|/)\.\.(/|$)'),
+    CONSTRAINT a2a_backend_transport_profile_boundary_ck CHECK(data_boundary_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT a2a_backend_transport_profile_limit_ck CHECK(request_timeout_ms BETWEEN 100 AND 300000 AND maximum_request_bytes BETWEEN 1 AND 16777216 AND maximum_response_bytes BETWEEN 1 AND 67108864),
+    CONSTRAINT a2a_backend_transport_profile_capabilities_ck CHECK(
+      jsonb_typeof(capabilities)='object'
+      AND capabilities ?& ARRAY['contractVersion','streaming','cancellation','statusReconciliation','acceptedContentModes','maximumArtifactBytes']
+      AND capabilities - ARRAY['contractVersion','streaming','cancellation','statusReconciliation','acceptedContentModes','maximumArtifactBytes']='{}'::jsonb
+      AND capabilities->>'contractVersion'='light-a2a-backend/v1'
+      AND jsonb_typeof(capabilities->'streaming')='boolean'
+      AND jsonb_typeof(capabilities->'cancellation')='boolean'
+      AND jsonb_typeof(capabilities->'statusReconciliation')='boolean'
+      AND jsonb_typeof(capabilities->'acceptedContentModes')='array'
+      AND jsonb_array_length(capabilities->'acceptedContentModes') BETWEEN 1 AND 16
+      AND jsonb_typeof(capabilities->'maximumArtifactBytes')='number'
+      AND (capabilities->>'maximumArtifactBytes')::numeric BETWEEN 1 AND 1099511627776),
+    CONSTRAINT a2a_backend_transport_profile_version_ck CHECK(aggregate_version>0)
+);
+
+ALTER TABLE public.agent_a2a_binding_t
+    ADD COLUMN backend_transport_profile_id uuid;
+ALTER TABLE public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_backend_transport_fk
+    FOREIGN KEY(host_id,backend_transport_profile_id)
+    REFERENCES public.a2a_backend_transport_profile_t(host_id,backend_transport_profile_id) ON DELETE RESTRICT;
+ALTER TABLE public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_backend_transport_ck CHECK(
+        (implementation_kind='EXTERNAL_SIDECAR' AND backend_transport_profile_id IS NOT NULL)
+        OR (implementation_kind<>'EXTERNAL_SIDECAR' AND backend_transport_profile_id IS NULL));
+
+INSERT INTO public.cascade_relationship_policy_t (
+    parent_schema,parent_table,child_schema,child_table,constraint_name,
+    delete_action,restore_action,policy_description
+) VALUES
+    ('public','host_t','public','a2a_backend_transport_profile_t','a2a_backend_transport_profile_host_fk','IGNORE','NONE','A2A backend transport profiles are command-owned host state'),
+    ('public','a2a_backend_transport_profile_t','public','agent_a2a_binding_t','agent_a2a_binding_backend_transport_fk','IGNORE','NONE','Active A2A bindings retain their approved backend transport profile')
+ON CONFLICT (parent_schema,parent_table,child_schema,child_table,constraint_name)
+DO UPDATE SET delete_action=EXCLUDED.delete_action,restore_action=EXCLUDED.restore_action,
+    policy_description=EXCLUDED.policy_description,update_user=SESSION_USER,update_ts=CURRENT_TIMESTAMP;
+
+COMMENT ON TABLE public.a2a_backend_transport_profile_t IS 'Portal-authored fixed-loopback light-a2a-backend/v1 transport profile; contains references and limits but no secret material.';
+
 --
 -- Phase 7 operational-store provisioning control plane. These tables contain
 -- desired state and redacted lifecycle evidence only. Runtime credentials and
@@ -45086,7 +45467,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS operational_store_profile_active_uk
 CREATE TABLE IF NOT EXISTS public.operational_store_binding_t (
     binding_id uuid NOT NULL,
     host_id uuid NOT NULL,
-    environment character varying(32) NOT NULL,
+    environment character varying(32),
     scope_kind character varying(32) DEFAULT 'HOST_ENVIRONMENT' NOT NULL,
     scope_id uuid NOT NULL,
     profile_id character varying(126) NOT NULL,
@@ -45109,28 +45490,39 @@ CREATE TABLE IF NOT EXISTS public.operational_store_binding_t (
     active boolean DEFAULT true NOT NULL,
     update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
     update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    contract_version bigint DEFAULT 1 NOT NULL,
+    engine character varying(32),
+    server_host character varying(253),
+    port integer,
+    tls_mode character varying(32),
+    runtime_username character varying(63),
+    credential_source character varying(32),
+    minimum_schema_generation bigint,
     CONSTRAINT operational_store_binding_t_pkey PRIMARY KEY (binding_id),
     CONSTRAINT operational_store_binding_profile_fk FOREIGN KEY (profile_id, profile_version)
         REFERENCES public.operational_store_profile_t(profile_id, profile_version),
-    CONSTRAINT operational_store_binding_environment_ck CHECK (environment ~ '^[a-z][a-z0-9_-]{0,31}$'),
-    CONSTRAINT operational_store_binding_scope_ck CHECK (scope_kind = 'HOST_ENVIRONMENT' AND scope_id = host_id),
+    CONSTRAINT operational_store_binding_environment_ck CHECK (environment IS NULL OR environment ~ '^[a-z][a-z0-9_-]{0,31}$'),
+    CONSTRAINT operational_store_binding_contract_ck CHECK (contract_version IN (1,2)),
+    CONSTRAINT operational_store_binding_scope_ck CHECK ((contract_version=1 AND scope_kind='HOST_ENVIRONMENT' AND scope_id=host_id AND environment IS NOT NULL) OR (contract_version=2 AND scope_kind='HOST' AND scope_id=host_id AND environment IS NULL)),
     CONSTRAINT operational_store_binding_deployment_ck CHECK (deployment_profile IN ('DEV_DEDICATED','DEV_POOLED','CUSTOMER_MANAGED')),
-    CONSTRAINT operational_store_binding_state_ck CHECK (lifecycle_state IN ('REQUESTED','PROVISIONING','READY','FAILED','ROTATING','DEACTIVATION_REQUESTED','DEACTIVATED','RETENTION_HOLD','DECOMMISSION_REQUESTED','DECOMMISSIONING','DECOMMISSIONED')),
-    CONSTRAINT operational_store_binding_generation_ck CHECK (desired_generation > 0 AND observed_generation >= 0 AND observed_generation <= desired_generation AND credential_generation > 0),
+    CONSTRAINT operational_store_binding_state_ck CHECK ((contract_version=1 AND lifecycle_state IN ('REQUESTED','PROVISIONING','READY','FAILED','ROTATING','DEACTIVATION_REQUESTED','DEACTIVATED','RETENTION_HOLD','DECOMMISSION_REQUESTED','DECOMMISSIONING','DECOMMISSIONED')) OR (contract_version=2 AND lifecycle_state IN ('REGISTERED','DEACTIVATED','UNREGISTERED'))),
+    CONSTRAINT operational_store_binding_generation_ck CHECK (desired_generation>0 AND observed_generation>=0 AND observed_generation<=desired_generation AND credential_generation>0 AND credential_generation<=9007199254740991 AND (contract_version=1 OR (minimum_schema_generation>0 AND minimum_schema_generation<=9007199254740991))),
     CONSTRAINT operational_store_binding_database_ck CHECK (expected_database ~ '^[a-z][a-z0-9_]{0,62}$'),
-    CONSTRAINT operational_store_binding_secret_ck CHECK (secret_ref ~ '^operational-store/[0-9a-f-]{36}/[a-z][a-z0-9_-]{0,31}/runtime$'),
-    CONSTRAINT operational_store_binding_secret_scope_ck CHECK (
-        secret_ref = 'operational-store/' || host_id::text || '/' || environment || '/runtime'
-    ),
+    CONSTRAINT operational_store_binding_secret_ck CHECK ((contract_version=1 AND secret_ref~'^operational-store/[0-9a-f-]{36}/[a-z][a-z0-9_-]{0,31}/runtime$') OR (contract_version=2 AND length(secret_ref) BETWEEN 1 AND 512)),
+    CONSTRAINT operational_store_binding_secret_scope_ck CHECK (contract_version=2 OR secret_ref='operational-store/'||host_id::text||'/'||environment||'/runtime'),
     CONSTRAINT operational_store_binding_digest_ck CHECK (binding_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT operational_store_binding_publication_ck CHECK (NOT published OR lifecycle_state = 'READY'),
+    CONSTRAINT operational_store_binding_publication_ck CHECK (NOT published OR (contract_version=1 AND lifecycle_state='READY') OR (contract_version=2 AND lifecycle_state='REGISTERED')),
     CONSTRAINT operational_store_binding_revocation_ck CHECK (revocation_epoch >= 0 AND aggregate_version > 0),
-    CONSTRAINT operational_store_binding_no_secret_ck CHECK (secret_ref !~* '(postgres(ql)?://|password=|pwd=)')
+    CONSTRAINT operational_store_binding_no_secret_ck CHECK (secret_ref !~* '(postgres(ql)?://|password=|pwd=)'),
+    CONSTRAINT operational_store_binding_registration_fields_ck CHECK (contract_version=1 OR (engine='POSTGRESQL' AND server_host~'^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$' AND port BETWEEN 1 AND 65535 AND tls_mode IN ('DISABLE','PREFER','REQUIRE','VERIFY_CA','VERIFY_FULL') AND credential_source='MOUNTED_FILE' AND secret_ref LIKE '/%'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS operational_store_binding_active_scope_uk
     ON public.operational_store_binding_t(host_id, environment)
     WHERE active AND lifecycle_state <> 'DECOMMISSIONED';
+CREATE UNIQUE INDEX IF NOT EXISTS operational_store_binding_active_host_v2_uk
+    ON public.operational_store_binding_t(host_id)
+    WHERE contract_version=2 AND active AND lifecycle_state<>'UNREGISTERED';
 CREATE INDEX IF NOT EXISTS operational_store_binding_state_ix
     ON public.operational_store_binding_t(lifecycle_state, update_ts);
 
@@ -45190,7 +45582,7 @@ CREATE TABLE IF NOT EXISTS public.operational_store_publication_t (
     binding_id uuid NOT NULL,
     binding_version bigint NOT NULL,
     host_id uuid NOT NULL,
-    environment character varying(32) NOT NULL,
+    environment character varying(32),
     publication_state character varying(16) NOT NULL,
     content_digest character varying(71) NOT NULL,
     projection jsonb NOT NULL,
@@ -45238,15 +45630,19 @@ CREATE INDEX IF NOT EXISTS operational_store_instance_property_ownership_binding
 
 CREATE OR REPLACE FUNCTION public.operational_store_publication_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE binding_state varchar(32); binding_published boolean; binding_host uuid; binding_environment varchar(32);
+DECLARE binding_state varchar(32); binding_published boolean; binding_host uuid;
+        binding_environment varchar(32); binding_contract bigint;
 BEGIN
     IF NEW.publication_state = 'ACTIVE' THEN
-        SELECT lifecycle_state,published,host_id,environment
-          INTO binding_state,binding_published,binding_host,binding_environment
+        SELECT lifecycle_state,published,host_id,environment,contract_version
+          INTO binding_state,binding_published,binding_host,binding_environment,binding_contract
           FROM public.operational_store_binding_t WHERE binding_id=NEW.binding_id;
-        IF binding_state IS DISTINCT FROM 'READY' OR binding_published IS DISTINCT FROM true
-           OR binding_host IS DISTINCT FROM NEW.host_id OR binding_environment IS DISTINCT FROM NEW.environment THEN
-            RAISE EXCEPTION 'only an exact READY operational-store binding may publish';
+        IF binding_published IS DISTINCT FROM true OR binding_host IS DISTINCT FROM NEW.host_id
+           OR (binding_contract=1 AND (binding_state IS DISTINCT FROM 'READY'
+               OR binding_environment IS DISTINCT FROM NEW.environment))
+           OR (binding_contract=2 AND (binding_state IS DISTINCT FROM 'REGISTERED'
+               OR NEW.environment IS NOT NULL)) THEN
+            RAISE EXCEPTION 'only an exact published operational-store binding may publish';
         END IF;
     END IF;
     RETURN NEW;
@@ -45257,14 +45653,49 @@ CREATE TRIGGER operational_store_publication_guard_trg
 BEFORE INSERT OR UPDATE ON public.operational_store_publication_t
 FOR EACH ROW EXECUTE FUNCTION public.operational_store_publication_guard();
 
+-- A prior run has already installed the read-only guard. Remove it before the
+-- idempotent seed writes and restore it below so this seed section is re-runnable.
+DROP TRIGGER IF EXISTS operational_store_legacy_profile_write_guard_trg
+    ON public.operational_store_profile_t;
+
 INSERT INTO public.operational_store_profile_t (
     profile_id, profile_version, deployment_profile, provider, profile_config,
     aggregate_version, active, update_user
 ) VALUES (
     'dev-dedicated-postgres-v1', 1, 'DEV_DEDICATED', 'POSTGRESQL',
     '{"databaseIdentity":"operations","databasePerHostEnvironment":true,"providerAdapter":"postgres17-pgvector-container","pooled":false}'::jsonb,
-    1, true, 'phase7-bootstrap'
+    1, false, 'p7-compatibility-closure'
 ) ON CONFLICT (profile_id, profile_version) DO NOTHING;
+
+INSERT INTO public.operational_store_profile_t (
+    profile_id, profile_version, deployment_profile, provider, profile_config,
+    aggregate_version, active, update_user
+) VALUES (
+    'customer-managed-registration-v2', 2, 'CUSTOMER_MANAGED', 'CUSTOMER_MANAGED',
+    '{"databaseProvisionedExternally":true,"hostScoped":true,"portalDatabaseAccess":false}'::jsonb,
+    1, true, 'registration-v2-bootstrap'
+) ON CONFLICT (profile_id, profile_version) DO NOTHING;
+
+-- Version-1 provider profiles and jobs are retained only for historical replay
+-- and audit. No application or operator may restart the retired provisioner.
+CREATE OR REPLACE FUNCTION public.operational_store_legacy_write_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'version-1 operational-store provisioning is read-only';
+END
+$$;
+
+DROP TRIGGER IF EXISTS operational_store_legacy_job_write_guard_trg
+    ON public.operational_store_provisioning_job_t;
+CREATE TRIGGER operational_store_legacy_job_write_guard_trg
+BEFORE INSERT OR UPDATE OR DELETE ON public.operational_store_provisioning_job_t
+FOR EACH ROW EXECUTE FUNCTION public.operational_store_legacy_write_guard();
+
+DROP TRIGGER IF EXISTS operational_store_legacy_profile_write_guard_trg
+    ON public.operational_store_profile_t;
+CREATE TRIGGER operational_store_legacy_profile_write_guard_trg
+BEFORE INSERT OR UPDATE OR DELETE ON public.operational_store_profile_t
+FOR EACH ROW EXECUTE FUNCTION public.operational_store_legacy_write_guard();
 
 \unrestrict hH5RPVy0DmoyafcyXfCcG4i9sdKgsYSKTzXXVVYP7XpvO7UaT9TIlRIkHZQaYB0
 

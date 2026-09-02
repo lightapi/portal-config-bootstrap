@@ -22,7 +22,7 @@ services:
       PORTAL_DB_TOPOLOGY: separate
       PORTAL_DB_NAME: configserver
       PORTAL_DB_KNOWLEDGE_NAME: knowledge
-      PORTAL_DB_OPERATIONAL_NAME: operations
+      PORTAL_DB_OPERATIONAL_NAMES: operations,operations_networknt,operations_taiji
     command: postgres -c wal_level=logical -c max_replication_slots=10 -c max_wal_senders=10
     ports:
       - 5432:5432
@@ -56,31 +56,18 @@ services:
   operational-store-bootstrap:
     image: timescale/timescaledb:latest-pg17
     user: "0:0"
-    entrypoint: ["/bin/bash", "/opt/operational-store/bin/bootstrap-operational-store.sh"]
+    entrypoint: ["/bin/bash", "/opt/operational-store/bin/bootstrap-operational-databases.sh"]
     volumes:
       - ./postgres-db/operations/bin:/opt/operational-store/bin:ro
       - ./postgres-db/operations/bundle:/opt/operational-store/bundle:ro
-      - ./postgres-db/secrets/operational-database-url:/run/secrets/operational-database-url:ro
-      - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
-      - ./postgres-db/secrets/execution-database-url:/run/secrets/execution-database-url:ro
-      - ./postgres-db/secrets/workflow-database-url:/run/secrets/workflow-database-url:ro
-      - ./postgres-db/secrets/a2a-database-url:/run/secrets/a2a-database-url:ro
-      - ./postgres-db/secrets/gateway-database-url:/run/secrets/gateway-database-url:ro
-      - ./postgres-db/secrets/audit-database-url:/run/secrets/audit-database-url:ro
-      - ./postgres-db/secrets/artifact-database-url:/run/secrets/artifact-database-url:ro
+      - ./postgres-db/operations/operational-databases.tsv:/opt/operational-store/operational-databases.tsv:ro
+      - ./postgres-db/secrets:/run/secrets
     environment:
       PGHOST: postgres
       POSTGRES_USER: postgres
       PGPASSWORD: secret
-      PORTAL_DB_OPERATIONAL_NAME: operations
-      OPERATIONAL_BINDING_ID: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
-      OPERATIONAL_BINDING_DIGEST: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
-      OPERATIONAL_SCOPE_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
-      OPERATIONAL_HOST_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
-      OPERATIONAL_ENVIRONMENT: dev
-      OPERATIONAL_DEPLOYMENT_PROFILE: DEV_DEDICATED
-      OPERATIONAL_CONTRACT_GENERATION: 1
-      OPERATIONAL_BUNDLE_VERSION: 1.4.0
+      OPERATIONAL_CONTRACT_GENERATION: 2
+      OPERATIONAL_BUNDLE_VERSION: 2.0.0
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,24 +75,43 @@ services:
 
   operational-schema-validation:
     image: timescale/timescaledb:latest-pg17
-    entrypoint: ["/bin/bash", "/opt/operational-store/bin/validate-phase6-gateway-evidence-authority.sh"]
+    entrypoint: ["/bin/bash", "/opt/operational-store/bin/validate-operational-databases.sh"]
     volumes:
       - ./postgres-db/operations/bin:/opt/operational-store/bin:ro
       - ./postgres-db/operations/bundle:/opt/operational-store/bundle:ro
+      - ./postgres-db/operations/operational-databases.tsv:/opt/operational-store/operational-databases.tsv:ro
+      - ./postgres-db/secrets:/run/secrets:ro
     environment:
       PGHOST: postgres
       POSTGRES_USER: postgres
       PGPASSWORD: secret
-      PORTAL_DB_OPERATIONAL_NAME: operations
-      OPERATIONAL_BINDING_ID: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
-      OPERATIONAL_BINDING_DIGEST: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
-      OPERATIONAL_SCOPE_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
-      OPERATIONAL_HOST_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
-      OPERATIONAL_ENVIRONMENT: dev
-      OPERATIONAL_CONTRACT_GENERATION: 1
-      PORTAL_DB_NAME: configserver
-      PORTAL_DB_CONFIGSERVER_SCHEMA: public
-      CONFIGSERVER_RUNTIME_ROLE: portal_dev_runtime
+    depends_on:
+      operational-store-bootstrap:
+        condition: service_completed_successfully
+    restart: "no"
+
+  operational-runtime-secrets-init:
+    image: timescale/timescaledb:latest-pg17
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        host_dir="/source/operational-hosts/$${OPERATIONAL_RUNTIME_HOST:-dev.lightapi.net}"
+        cp "$$host_dir/execution-database-url" /target/controller/execution-database-url
+        cp "$$host_dir/workflow-database-url" /target/workflow/operational-database-url
+        cp "$$host_dir/gateway-database-url" /target/gateway/operational-database-url
+        cp "$$host_dir/a2a-database-url" /target/a2a/operational-database-url
+        cp "$$host_dir/operational-database-url" /target/agent/operational-database-url
+        chown -R ${LIGHT_RUNTIME_UID:-999}:${LIGHT_RUNTIME_GID:-999} /target/controller /target/workflow /target/gateway /target/a2a /target/agent
+        find /target/controller /target/workflow /target/gateway /target/a2a /target/agent -type d -exec chmod 700 {} +
+        find /target/controller /target/workflow /target/gateway /target/a2a /target/agent -type f -exec chmod 400 {} +
+    volumes:
+      - ./postgres-db/secrets:/source:ro
+      - controller-runtime-secrets:/target/controller
+      - workflow-runtime-secrets:/target/workflow
+      - gateway-runtime-secrets:/target/gateway
+      - a2a-runtime-secrets:/target/a2a
+      - agent-runtime-secrets:/target/agent
     depends_on:
       operational-store-bootstrap:
         condition: service_completed_successfully
@@ -173,7 +179,7 @@ services:
     image: networknt/controller-rs:latest
     volumes:
       - ./light-controller-rust:/keystore:ro
-      - ./postgres-db/secrets/execution-database-url:/run/secrets/execution-database-url:ro
+      - controller-runtime-secrets:/run/secrets:ro
     environment:
       CONTROLLER_ADDR: "[::]:8438"
       CONTROLLER_HOST_ID: 01964b05-552a-7c4b-9184-6857e7f3dc5f
@@ -185,8 +191,8 @@ services:
       DATABASE_MAXIMUM_POOL_SIZE: 3
       CONTROLLER_EXECUTION_DATABASE_URL_FILE: /run/secrets/execution-database-url
       CONTROLLER_EXECUTION_DATABASE_MAXIMUM_POOL_SIZE: 5
-      CONTROLLER_EXECUTION_BINDING_ID: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
-      CONTROLLER_EXECUTION_BINDING_DIGEST: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+      CONTROLLER_EXECUTION_BINDING_ID: 01a06356-a4aa-7528-838e-dfbbe90ec959
+      CONTROLLER_EXECUTION_BINDING_DIGEST: sha256:79a39f6ff78c336d6ac9b0dc711115750bf22be954c584fa836930150e3db09e
       CONTROLLER_EXECUTION_ENVIRONMENT: dev
       CONTROLLER_EXECUTION_MINIMUM_SCHEMA_GENERATION: 1
       CONTROLLER_EXECUTION_REQUIRED_SCOPE: execution.invoke
@@ -199,6 +205,8 @@ services:
     hostname: controller
     container_name: controller
     depends_on:
+      operational-runtime-secrets-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       operational-schema-validation:
@@ -303,7 +311,7 @@ services:
     volumes:
       - ./light-gateway-rust/config/ca.pem:/config/ca.pem:ro
       - ./light-workflow-rust/config/startup.yml:/config/startup.yml:ro
-      - ./postgres-db/secrets/workflow-database-url:/run/secrets/operational-database-url:ro
+      - workflow-runtime-secrets:/run/secrets:ro
       - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
       - light-workflow-config-cache:/app/config-cache
     environment:
@@ -314,18 +322,24 @@ services:
       portalRegistry.portalUrl: "https://controller:8438"
       server.advertisedAddress: "light-workflow"
       LIGHT_PORTAL_AUTHORIZATION: "${LIGHT_WORKFLOW_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxYTAxMWQwLWI1ZWMtNzliMC04OTU2LTI0Yzg3NDU2YWQzMCIsImV4cCI6MjEwMjM2NTM0MSwianRpIjoiOWlkTlRBNHNRc2U5eEVFMjFRblFKQSIsImlhdCI6MTc4NzAwNTM0MSwibmJmIjoxNzg3MDA1MjIxLCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMWEwMTFkMC1iNWVjLTc5YjAtODk1Ni0yNGM4NzQ1NmFkMzAiLCJzY3AiOlsicG9ydGFsLnciLCJwb3J0YWwuciJdLCJjbGllbnRfaWQiOiIwMWEwMTFkMC1iNWVjLTc5YjAtODk1Ni0yNGM4NzQ1NmFkMzAiLCJzY29wZSI6InBvcnRhbC53IHBvcnRhbC5yIiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQud29ya2Zsb3ctMS4wLjAifQ.HklSKUh2NSjlf469kwmf0f0pi9ojSst8enegZ4ebAsfBRGyQD-VnOFWchWUSksej4ofpSQFFiE_YNVASVImQC487BX6uFstr74laaiTcvr87w4ze8UCjsYJYJaW3OjXtp9SeIkrZS6bbUzqjsAYYQ2CjgaCoZLgnrItZZx1xALwYKeWonMfbpq0iNs02KnZLpoT4DN4YMP1avnT4WzbB_2-FvFIryVL3ecGkt5xho7LOsyQSF5uwpR7V4AO_NmOHTVeOlhpt69lFlY16YeFtzoH87Y0g6fwYTfEsyZ283pIkP7qRXHDkg92KromkqGSmhY7_4Nhwv6mGWrtJ7XmAMg}"
-      operationalStore.bindingId: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
-      operationalStore.bindingDigest: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+      operationalStore.bindingId: 01a06356-a4aa-7528-838e-dfbbe90ec959
+      operationalStore.bindingDigest: sha256:79a39f6ff78c336d6ac9b0dc711115750bf22be954c584fa836930150e3db09e
       operationalStore.hostId: 01964b05-552a-7c4b-9184-6857e7f3dc5f
       operationalStore.environment: dev
+      operationalStore.serverHost: postgres
+      operationalStore.port: "5432"
+      operationalStore.tlsMode: DISABLE
       operationalStore.serviceOwner: light-workflow
       operationalStore.schema: workflow_ops
       operationalStore.expectedDatabase: operations
+      operationalStore.minimumSchemaGeneration: "2"
       operationalStore.databaseUrlFile: /run/secrets/operational-database-url
       operationalStore.credentialGeneration: "1"
     hostname: light-workflow
     container_name: light-workflow
     depends_on:
+      operational-runtime-secrets-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       light-oauth:
@@ -437,15 +451,23 @@ services:
       - ./light-gateway-rust/config:/config
       - ./light-gateway-rust/lightapi/dist:/lightapi/dist
       - ./light-gateway-rust/signin/dist:/signin/dist
-      - ./postgres-db/secrets/gateway-database-url:/run/secrets/gateway-database-url:ro
+      - gateway-runtime-secrets:/run/secrets:ro
     environment:
       LIGHT_RS_CONFIG_DIR: /config
       gatewayEvidence.enabled: "true"
-      gatewayEvidence.databaseUrlFile: /run/secrets/gateway-database-url
-      gatewayEvidence.bindingId: f8a8e4d0-c7cf-4000-b3b0-0044c62d3242
-      gatewayEvidence.bindingDigest: sha256:45be37b41a916f04308f84170728dd23342a602b81e5c64990c4021359d6fa6e
+      gatewayEvidence.contractVersion: "2"
+      gatewayEvidence.databaseUrlFile: /run/secrets/operational-database-url
+      gatewayEvidence.bindingId: 01a06356-a4aa-7528-838e-dfbbe90ec959
+      gatewayEvidence.bindingDigest: sha256:79a39f6ff78c336d6ac9b0dc711115750bf22be954c584fa836930150e3db09e
       gatewayEvidence.hostId: 01964b05-552a-7c4b-9184-6857e7f3dc5f
       gatewayEvidence.environment: dev
+      gatewayEvidence.serverHost: postgres
+      gatewayEvidence.port: "5432"
+      gatewayEvidence.tlsMode: DISABLE
+      gatewayEvidence.serviceOwner: light-gateway
+      gatewayEvidence.schema: gateway_ops
+      gatewayEvidence.expectedDatabase: operations
+      gatewayEvidence.minimumSchemaGeneration: "2"
       gatewayEvidence.credentialGeneration: "1"
       gatewayEvidence.gatewayInstance: light-gateway-dev-1
       gatewayEvidence.sinkEndpoint: stdout://collector
@@ -465,6 +487,8 @@ services:
     hostname: light-gateway
     container_name: light-gateway
     depends_on:
+      operational-runtime-secrets-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       config-server:
@@ -511,7 +535,7 @@ services:
     volumes:
       - ./light-a2a-rust/config:/config:ro
       - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
-      - ./postgres-db/secrets/a2a-database-url:/run/secrets/operational-database-url:ro
+      - a2a-runtime-secrets:/run/secrets:ro
       - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
     environment:
       LIGHT_RS_CONFIG_DIR: /config
@@ -521,6 +545,8 @@ services:
     hostname: light-a2a
     container_name: light-a2a
     depends_on:
+      operational-runtime-secrets-init:
+        condition: service_completed_successfully
       operational-schema-validation:
         condition: service_completed_successfully
       controller:
@@ -540,7 +566,7 @@ services:
     volumes:
       - ./light-agent-rust/config:/config:ro
       - ./light-controller-rust/ca.pem:/keystore/ca.pem:ro
-      - ./postgres-db/secrets/operational-database-url:/run/secrets/operational-database-url:ro
+      - agent-runtime-secrets:/run/secrets:ro
       - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
     environment:
       LIGHT_RS_CONFIG_DIR: /config
@@ -561,6 +587,8 @@ services:
     hostname: light-agent
     container_name: light-agent
     depends_on:
+      operational-runtime-secrets-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       operational-schema-validation:
@@ -681,3 +709,8 @@ services:
 
 volumes:
   light-workflow-config-cache:
+  controller-runtime-secrets:
+  workflow-runtime-secrets:
+  gateway-runtime-secrets:
+  a2a-runtime-secrets:
+  agent-runtime-secrets:

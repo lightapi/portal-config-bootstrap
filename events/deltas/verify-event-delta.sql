@@ -49,10 +49,11 @@ BEGIN
           )
           AND (equivalent.payload -> 'data') @>
               -- hostId is matched by host_id above. Snapshot exports can regenerate
-              -- or omit configId; the aggregate subject and remaining identity fields
-              -- pin the logical entity without treating that transport field as state.
+              -- or omit configId and refresh updateTs; the aggregate subject and
+              -- remaining identity fields pin the logical entity without treating
+              -- those transport/audit fields as state.
               expected.data - 'hostId' - 'aggregateVersion'
-                            - 'newAggregateVersion' - 'configId'
+                            - 'newAggregateVersion' - 'configId' - 'updateTs'
      );
 
   IF missing_events IS NOT NULL THEN

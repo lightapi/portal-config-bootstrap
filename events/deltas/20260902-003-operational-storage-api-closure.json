@@ -1,0 +1,1814 @@
+[
+  {
+    "id": "01a063ac-3953-7dcb-949a-a7fc5b8b85bb",
+    "data": {
+      "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+      "apiVersionId": "019bbe67-e0f1-7899-9732-ecb9e5c61380",
+      "apiId": "LPS1110",
+      "apiVersion": "1.0.0",
+      "apiType": "hybrid",
+      "protocol": "https",
+      "serviceId": "host-query.lightapi.net",
+      "apiVersionDesc": "host-query hybrid service 1.0.0",
+      "spec": "---\nhost: \"lightapi.net\"\nservice: \"host\"\nschemas:\n  getOrgRequest:\n    title: \"Org List\"\n    type: \"object\"\n    properties:\n      offset:\n        type: \"integer\"\n        description: \"Record offset\"\n      limit:\n        type: \"integer\"\n        description: \"Record limit\"\n      active:\n        type: \"boolean\"\n        description: \"Active\"\n    required:\n    - \"limit\"\n    - \"offset\"\n    - \"active\"\n  getHostRequest:\n    title: \"Host List\"\n    type: \"object\"\n    properties:\n      offset:\n        type: \"integer\"\n        description: \"Record offset\"\n      limit:\n        type: \"integer\"\n        description: \"Record limit\"\n      active:\n        type: \"boolean\"\n        description: \"Active\"\n    required:\n    - \"limit\"\n    - \"offset\"\n    - \"active\"\n  getHostByDomainRequest:\n    title: \"Host List\"\n    type: \"object\"\n    properties:\n      domain:\n        type: \"string\"\n        description: \"Domain\"\n    required:\n    - \"domain\"\n  getFreshOrgRequest:\n    title: \"Org\"\n    type: \"object\"\n    properties:\n      domain:\n        type: \"string\"\n        description: \"Domain\"\n      aggregateVersion:\n        type: \"integer\"\n        description: \"Aggregate Version\"\n    required:\n    - \"domain\"\n    - \"aggregateVersion\"\n  getFreshHostRequest:\n    title: \"Host\"\n    type: \"object\"\n    properties:\n      hostId:\n        type: \"string\"\n        description: \"Host Id\"\n      aggregateVersion:\n        type: \"integer\"\n        description: \"Aggregate Version\"\n    required:\n    - \"hostId\"\n    - \"aggregateVersion\"\n  getHostByIdRequest:\n    title: \"Host Dashboard\"\n    type: \"object\"\n    properties:\n      hostId:\n        type: \"string\"\n        description: \"Host Id\"\n    required:\n    - \"hostId\"\n  getHostDomainByIdRequest:\n    title: \"Host Domain\"\n    type: \"object\"\n    properties:\n      hostId:\n        type: \"string\"\n        description: \"Host Id\"\n    required:\n    - \"hostId\"\n  getUserHostRequest:\n    title: \"User Host\"\n    type: \"object\"\n    properties:\n      offset:\n        type: \"integer\"\n        description: \"Record offset\"\n      limit:\n        type: \"integer\"\n        description: \"Record limit\"\n      hostId:\n        type: \"string\"\n        description: \"Host Id\"\n      active:\n        type: \"boolean\"\n        description: \"Active\"\n    required:\n    - \"limit\"\n    - \"offset\"\n    - \"active\"\n    - \"hostId\"\n  getOperationalStoreBindingsRequest:\n    title: \"Operational Store Bindings\"\n    type: \"object\"\n    properties:\n      targetHostId: {type: \"string\", format: \"uuid\"}\n      bindingId: {type: \"string\", format: \"uuid\"}\n      includeInactive: {type: \"boolean\", default: false}\n    required: [\"targetHostId\", \"includeInactive\"]\naction:\n- name: \"getOrg\"\n  version: \"0.1.0\"\n  handler: \"GetOrg\"\n  scope: \"portal.r\"\n  request:\n    schema:\n      $ref: \"#/schemas/getOrgRequest\"\n    example:\n      offset: 0\n      limit: 10\n      active: true\n- name: \"getHost\"\n  version: \"0.1.0\"\n  handler: \"GetHost\"\n  scope: \"portal.r\"\n  request:\n    schema:\n      $ref: \"#/schemas/getHostRequest\"\n    example:\n      offset: 0\n      limit: 10\n      active: true\n- name: \"getHostByDomain\"\n  version: \"0.1.0\"\n  handler: \"GetHostByDomain\"\n  scope: \"portal.r\"\n  request:\n    schema:\n      $ref: \"#/schemas/getHostByDomainRequest\"\n    example:\n      domain: \"example.com\"\n- name: \"getFreshOrg\"\n  version: \"0.1.0\"\n  handler: \"GetFreshOrg\"\n  scope: \"portal.r\"\n  request:\n    schema:\n      $ref: \"#/schemas/getFreshOrgRequest\"\n    example:\n      domain: \"example.com\"\n      aggregateVersion: 1\n- name: \"getFreshHost\"\n  version: \"0.1.0\"\n  handler: \"GetFreshHost\"\n  scope: \"portal.r\"\n  request:\n    schema:\n      $ref: \"#/schemas/getFreshHostRequest\"\n    example:\n      hostId: \"host123\"\n      aggregateVersion: 1\n- name: \"getHostLabel\"\n  version: \"0.1.0\"\n  handler: \"GetHostLabel\"\n  skipAuth: true\n  request:\n    schema: null\n- name: \"getHostById\"\n  version: \"0.1.0\"\n  handler: \"GetHostById\"\n  scope: \"portal.r\"\n  request:\n    schema:\n      $ref: \"#/schemas/getHostByIdRequest\"\n    example:\n      hostId: \"host123\"\n- name: \"getHostDomainById\"\n  version: \"0.1.0\"\n  handler: \"GetHostDomainById\"\n  scope: \"portal.r\"\n  request:\n    schema:\n      $ref: \"#/schemas/getHostDomainByIdRequest\"\n    example:\n      hostId: \"host123\"\n- name: \"getUserHost\"\n  version: \"0.1.0\"\n  handler: \"GetUserHost\"\n  scope: \"portal.r\"\n  request:\n    schema:\n      $ref: \"#/schemas/getUserHostRequest\"\n    example:\n      offset: 0\n      limit: 10\n      active: true\n      hostId: \"host123\"\n- name: \"getOperationalStoreBindings\"\n  version: \"0.1.0\"\n  handler: \"GetOperationalStoreBindings\"\n  scope: \"portal.r\"\n  request:\n    schema:\n      $ref: \"#/schemas/getOperationalStoreBindingsRequest\"\n",
+      "ownerUserId": "01964b05-5532-7c79-8cde-191dcbd421b8",
+      "active": true,
+      "updateUser": "01964b05-5532-7c79-8cde-191dcbd421b8",
+      "updateTs": "2026-09-02T19:50:00.000Z",
+      "endpoints": [
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getOrg\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getOrg/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getOrg/0.1.0\",\"GetOrg\",\"portal.r\",\"read\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getOrg\",\"version\":\"0.1.0\",\"handler\":\"GetOrg\",\"transportPath\":\"/portal/query\",\"operation\":\"read\",\"scope\":\"portal.r\",\"skipAuth\":false}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getOrg/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Org List\",\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\",\"description\":\"Record offset\"},\"limit\":{\"type\":\"integer\",\"description\":\"Record limit\"},\"active\":{\"type\":\"boolean\",\"description\":\"Active\"}},\"required\":[\"limit\",\"offset\",\"active\"]}",
+          "endpointId": "019bbe67-e0f9-7c4b-9726-6177aee43a1b",
+          "capabilityRef": "LPS1110/getOrg",
+          "endpointName": "getOrg",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getOrg",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getOrg": {
+                "endpointId": "LPS1110/getOrg",
+                "operationId": "getOrg",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getOrg/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Org List",
+                    "type": "object",
+                    "properties": {
+                      "offset": {
+                        "type": "integer",
+                        "description": "Record offset"
+                      },
+                      "limit": {
+                        "type": "integer",
+                        "description": "Record limit"
+                      },
+                      "active": {
+                        "type": "boolean",
+                        "description": "Active"
+                      }
+                    },
+                    "required": [
+                      "limit",
+                      "offset",
+                      "active"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getOrg/0.1.0",
+          "routingDomain": "getOrg",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.r"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getHost\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getHost/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getHost/0.1.0\",\"GetHost\",\"portal.r\",\"read\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getHost\",\"version\":\"0.1.0\",\"handler\":\"GetHost\",\"transportPath\":\"/portal/query\",\"operation\":\"read\",\"scope\":\"portal.r\",\"skipAuth\":false}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getHost/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Host List\",\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\",\"description\":\"Record offset\"},\"limit\":{\"type\":\"integer\",\"description\":\"Record limit\"},\"active\":{\"type\":\"boolean\",\"description\":\"Active\"}},\"required\":[\"limit\",\"offset\",\"active\"]}",
+          "endpointId": "019bbe67-e0f9-7d0c-9727-46d2893db2e2",
+          "capabilityRef": "LPS1110/getHost",
+          "endpointName": "getHost",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getHost",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getHost": {
+                "endpointId": "LPS1110/getHost",
+                "operationId": "getHost",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getHost/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Host List",
+                    "type": "object",
+                    "properties": {
+                      "offset": {
+                        "type": "integer",
+                        "description": "Record offset"
+                      },
+                      "limit": {
+                        "type": "integer",
+                        "description": "Record limit"
+                      },
+                      "active": {
+                        "type": "boolean",
+                        "description": "Active"
+                      }
+                    },
+                    "required": [
+                      "limit",
+                      "offset",
+                      "active"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getHost/0.1.0",
+          "routingDomain": "getHost",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.r"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getHostByDomain\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getHostByDomain/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getHostByDomain/0.1.0\",\"GetHostByDomain\",\"portal.r\",\"read\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getHostByDomain\",\"version\":\"0.1.0\",\"handler\":\"GetHostByDomain\",\"transportPath\":\"/portal/query\",\"operation\":\"read\",\"scope\":\"portal.r\",\"skipAuth\":false}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getHostByDomain/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Host List\",\"type\":\"object\",\"properties\":{\"domain\":{\"type\":\"string\",\"description\":\"Domain\"}},\"required\":[\"domain\"]}",
+          "endpointId": "019bbe67-e0f9-7d30-9728-7a6e2d017d13",
+          "capabilityRef": "LPS1110/getHostByDomain",
+          "endpointName": "getHostByDomain",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getHostByDomain",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getHostByDomain": {
+                "endpointId": "LPS1110/getHostByDomain",
+                "operationId": "getHostByDomain",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getHostByDomain/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Host List",
+                    "type": "object",
+                    "properties": {
+                      "domain": {
+                        "type": "string",
+                        "description": "Domain"
+                      }
+                    },
+                    "required": [
+                      "domain"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getHostByDomain/0.1.0",
+          "routingDomain": "getHostByDomain",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.r"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getFreshOrg\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getFreshOrg/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getFreshOrg/0.1.0\",\"GetFreshOrg\",\"portal.r\",\"read\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getFreshOrg\",\"version\":\"0.1.0\",\"handler\":\"GetFreshOrg\",\"transportPath\":\"/portal/query\",\"operation\":\"read\",\"scope\":\"portal.r\",\"skipAuth\":false}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getFreshOrg/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Org\",\"type\":\"object\",\"properties\":{\"domain\":{\"type\":\"string\",\"description\":\"Domain\"},\"aggregateVersion\":{\"type\":\"integer\",\"description\":\"Aggregate Version\"}},\"required\":[\"domain\",\"aggregateVersion\"]}",
+          "endpointId": "019bbe67-e0f9-7d52-9729-4e4fe88ab3a7",
+          "capabilityRef": "LPS1110/getFreshOrg",
+          "endpointName": "getFreshOrg",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getFreshOrg",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getFreshOrg": {
+                "endpointId": "LPS1110/getFreshOrg",
+                "operationId": "getFreshOrg",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getFreshOrg/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Org",
+                    "type": "object",
+                    "properties": {
+                      "domain": {
+                        "type": "string",
+                        "description": "Domain"
+                      },
+                      "aggregateVersion": {
+                        "type": "integer",
+                        "description": "Aggregate Version"
+                      }
+                    },
+                    "required": [
+                      "domain",
+                      "aggregateVersion"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getFreshOrg/0.1.0",
+          "routingDomain": "getFreshOrg",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.r"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getFreshHost\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getFreshHost/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getFreshHost/0.1.0\",\"GetFreshHost\",\"portal.r\",\"read\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getFreshHost\",\"version\":\"0.1.0\",\"handler\":\"GetFreshHost\",\"transportPath\":\"/portal/query\",\"operation\":\"read\",\"scope\":\"portal.r\",\"skipAuth\":false}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getFreshHost/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Host\",\"type\":\"object\",\"properties\":{\"hostId\":{\"type\":\"string\",\"description\":\"Host Id\"},\"aggregateVersion\":{\"type\":\"integer\",\"description\":\"Aggregate Version\"}},\"required\":[\"hostId\",\"aggregateVersion\"]}",
+          "endpointId": "019bbe67-e0f9-7d93-972a-85dcf708a2ef",
+          "capabilityRef": "LPS1110/getFreshHost",
+          "endpointName": "getFreshHost",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getFreshHost",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getFreshHost": {
+                "endpointId": "LPS1110/getFreshHost",
+                "operationId": "getFreshHost",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getFreshHost/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Host",
+                    "type": "object",
+                    "properties": {
+                      "hostId": {
+                        "type": "string",
+                        "description": "Host Id"
+                      },
+                      "aggregateVersion": {
+                        "type": "integer",
+                        "description": "Aggregate Version"
+                      }
+                    },
+                    "required": [
+                      "hostId",
+                      "aggregateVersion"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getFreshHost/0.1.0",
+          "routingDomain": "getFreshHost",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.r"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getHostLabel\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getHostLabel/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getHostLabel/0.1.0\",\"GetHostLabel\",\"public\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getHostLabel\",\"version\":\"0.1.0\",\"handler\":\"GetHostLabel\",\"transportPath\":\"/portal/query\",\"operation\":\"public\",\"skipAuth\":true}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getHostLabel/0.1.0",
+          "lifecycleStatus": "active",
+          "endpointId": "019bbe67-e0f9-7dac-972b-09ed3c07c5f8",
+          "capabilityRef": "LPS1110/getHostLabel",
+          "endpointName": "getHostLabel",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getHostLabel",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getHostLabel": {
+                "endpointId": "LPS1110/getHostLabel",
+                "operationId": "getHostLabel",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getHostLabel/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getHostLabel/0.1.0",
+          "routingDomain": "getHostLabel",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getHostById\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getHostById/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getHostById/0.1.0\",\"GetHostById\",\"portal.r\",\"read\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getHostById\",\"version\":\"0.1.0\",\"handler\":\"GetHostById\",\"transportPath\":\"/portal/query\",\"operation\":\"read\",\"scope\":\"portal.r\",\"skipAuth\":false}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getHostById/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Host Dashboard\",\"type\":\"object\",\"properties\":{\"hostId\":{\"type\":\"string\",\"description\":\"Host Id\"}},\"required\":[\"hostId\"]}",
+          "endpointId": "019bbe67-e0f9-7dc0-972c-ce2e93657b7c",
+          "capabilityRef": "LPS1110/getHostById",
+          "endpointName": "getHostById",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getHostById",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getHostById": {
+                "endpointId": "LPS1110/getHostById",
+                "operationId": "getHostById",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getHostById/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Host Dashboard",
+                    "type": "object",
+                    "properties": {
+                      "hostId": {
+                        "type": "string",
+                        "description": "Host Id"
+                      }
+                    },
+                    "required": [
+                      "hostId"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getHostById/0.1.0",
+          "routingDomain": "getHostById",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.r"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getHostDomainById\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getHostDomainById/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getHostDomainById/0.1.0\",\"GetHostDomainById\",\"portal.r\",\"read\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getHostDomainById\",\"version\":\"0.1.0\",\"handler\":\"GetHostDomainById\",\"transportPath\":\"/portal/query\",\"operation\":\"read\",\"scope\":\"portal.r\",\"skipAuth\":false}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getHostDomainById/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Host Domain\",\"type\":\"object\",\"properties\":{\"hostId\":{\"type\":\"string\",\"description\":\"Host Id\"}},\"required\":[\"hostId\"]}",
+          "endpointId": "019bbe67-e0f9-7dfa-972d-dee64454daea",
+          "capabilityRef": "LPS1110/getHostDomainById",
+          "endpointName": "getHostDomainById",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getHostDomainById",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getHostDomainById": {
+                "endpointId": "LPS1110/getHostDomainById",
+                "operationId": "getHostDomainById",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getHostDomainById/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Host Domain",
+                    "type": "object",
+                    "properties": {
+                      "hostId": {
+                        "type": "string",
+                        "description": "Host Id"
+                      }
+                    },
+                    "required": [
+                      "hostId"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getHostDomainById/0.1.0",
+          "routingDomain": "getHostDomainById",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.r"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getUserHost\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getUserHost/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getUserHost/0.1.0\",\"GetUserHost\",\"portal.r\",\"read\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getUserHost\",\"version\":\"0.1.0\",\"handler\":\"GetUserHost\",\"transportPath\":\"/portal/query\",\"operation\":\"read\",\"scope\":\"portal.r\",\"skipAuth\":false}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getUserHost/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"User Host\",\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\",\"description\":\"Record offset\"},\"limit\":{\"type\":\"integer\",\"description\":\"Record limit\"},\"hostId\":{\"type\":\"string\",\"description\":\"Host Id\"},\"active\":{\"type\":\"boolean\",\"description\":\"Active\"}},\"required\":[\"limit\",\"offset\",\"active\",\"hostId\"]}",
+          "endpointId": "019bbe67-e0f9-7e0f-972e-bc5214f9ff1b",
+          "capabilityRef": "LPS1110/getUserHost",
+          "endpointName": "getUserHost",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getUserHost",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getUserHost": {
+                "endpointId": "LPS1110/getUserHost",
+                "operationId": "getUserHost",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getUserHost/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "User Host",
+                    "type": "object",
+                    "properties": {
+                      "offset": {
+                        "type": "integer",
+                        "description": "Record offset"
+                      },
+                      "limit": {
+                        "type": "integer",
+                        "description": "Record limit"
+                      },
+                      "hostId": {
+                        "type": "string",
+                        "description": "Host Id"
+                      },
+                      "active": {
+                        "type": "boolean",
+                        "description": "Active"
+                      }
+                    },
+                    "required": [
+                      "limit",
+                      "offset",
+                      "active",
+                      "hostId"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getUserHost/0.1.0",
+          "routingDomain": "getUserHost",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.r"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"getOperationalStoreBindings\",\"semanticNamespace\":\"LPS1110\",\"semanticDescription\":\"lightapi.net/host/getOperationalStoreBindings/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/getOperationalStoreBindings/0.1.0\",\"GetOperationalStoreBindings\",\"portal.r\",\"read\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"getOperationalStoreBindings\",\"version\":\"0.1.0\",\"handler\":\"GetOperationalStoreBindings\",\"transportPath\":\"/portal/query\",\"operation\":\"read\",\"scope\":\"portal.r\",\"skipAuth\":false}},\"safety\":{\"read_only\":true,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":true,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/getOperationalStoreBindings/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Operational Store Bindings\",\"type\":\"object\",\"properties\":{\"targetHostId\":{\"type\":\"string\",\"format\":\"uuid\"},\"bindingId\":{\"type\":\"string\",\"format\":\"uuid\"},\"includeInactive\":{\"type\":\"boolean\",\"default\":false}},\"required\":[\"targetHostId\",\"includeInactive\"]}",
+          "endpointId": "01a052b7-d01e-763f-aa31-5ac91c0d901b",
+          "capabilityRef": "LPS1110/getOperationalStoreBindings",
+          "endpointName": "getOperationalStoreBindings",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/query",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "getOperationalStoreBindings",
+              "namespace": "LPS1110",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "getOperationalStoreBindings": {
+                "endpointId": "LPS1110/getOperationalStoreBindings",
+                "operationId": "getOperationalStoreBindings",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/query",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/getOperationalStoreBindings/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Operational Store Bindings",
+                    "type": "object",
+                    "properties": {
+                      "targetHostId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "bindingId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "includeInactive": {
+                        "type": "boolean",
+                        "default": false
+                      }
+                    },
+                    "required": [
+                      "targetHostId",
+                      "includeInactive"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/getOperationalStoreBindings/0.1.0",
+          "routingDomain": "getOperationalStoreBindings",
+          "semanticNamespace": "LPS1110",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.r"
+          ]
+        }
+      ],
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-09-02T19:50:26.387Z",
+    "type": "ApiVersionSpecUpdatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "nonce": "0",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019bbe67-e0f1-7899-9732-ecb9e5c61380",
+    "specversion": "1.0",
+    "aggregatetype": "ApiVersion",
+    "datacontenttype": "application/json",
+    "aggregateversion": 2
+  },
+  {
+    "id": "01a063ac-3954-798b-9501-6853cab2d837",
+    "data": {
+      "hostId": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+      "apiVersionId": "019bbe6a-5f40-7daa-b583-36638067a569",
+      "apiId": "LPS1111",
+      "apiVersion": "1.0.0",
+      "apiType": "hybrid",
+      "protocol": "https",
+      "serviceId": "host-command.lightapi.net",
+      "apiVersionDesc": "host-command hybrid service 1.0.0",
+      "spec": "---\nhost: \"lightapi.net\"\nservice: \"host\"\nschemas:\n  createOrgRequest:\n    title: \"Create Org\"\n    type: \"object\"\n    properties:\n      domain:\n        type: \"string\"\n        description: \"Domain Name\"\n        pattern: \".*\\\\S.*\"\n      orgName:\n        type: \"string\"\n        description: \"Org Name\"\n        pattern: \".*\\\\S.*\"\n      orgDesc:\n        type: \"string\"\n        description: \"Org Desc\"\n      orgOwner:\n        type: \"string\"\n        description: \"Org Owner\"\n        pattern: \".*\\\\S.*\"\n      subDomain:\n        type: \"string\"\n        description: \"Default Sub Domain\"\n        pattern: \".*\\\\S.*\"\n      hostDesc:\n        type: \"string\"\n        description: \"Default Host Desc\"\n      hostOwner:\n        type: \"string\"\n        description: \"Default Host Owner\"\n        pattern: \".*\\\\S.*\"\n    required:\n    - \"domain\"\n    - \"orgName\"\n    - \"orgOwner\"\n    - \"subDomain\"\n    - \"hostOwner\"\n  updateOrgRequest:\n    title: \"Update Org\"\n    type: \"object\"\n    properties:\n      domain:\n        type: \"string\"\n        description: \"Domain Name\"\n      orgName:\n        type: \"string\"\n        description: \"Org Name\"\n      orgDesc:\n        type: \"string\"\n        description: \"Org Desc\"\n      orgOwner:\n        type: \"string\"\n        description: \"Org Owner\"\n    required:\n    - \"domain\"\n    - \"orgName\"\n    - \"orgOwner\"\n  deleteOrgRequest:\n    title: \"Delete Org\"\n    type: \"object\"\n    properties:\n      domain:\n        type: \"string\"\n        description: \"Domain Name\"\n    required:\n    - \"domain\"\n  createHostRequest:\n    title: \"Create Host\"\n    type: \"object\"\n    properties:\n      domain:\n        type: \"string\"\n        description: \"Domain\"\n      subDomain:\n        type: \"string\"\n        description: \"Sub Domain\"\n      hostDesc:\n        type: \"string\"\n        description: \"Host Desc\"\n      hostOwner:\n        type: \"string\"\n        description: \"Host Owner\"\n    required:\n    - \"domain\"\n    - \"subDomain\"\n    - \"hostOwner\"\n  updateHostRequest:\n    title: \"Update Host\"\n    type: \"object\"\n    properties:\n      hostId:\n        type: \"string\"\n        description: \"Host Id\"\n      domain:\n        type: \"string\"\n        description: \"Domain\"\n      subDomain:\n        type: \"string\"\n        description: \"Sub Domain\"\n      hostDesc:\n        type: \"string\"\n        description: \"Host Desc\"\n      hostOwner:\n        type: \"string\"\n        description: \"Host Owner\"\n    required:\n    - \"hostId\"\n    - \"domain\"\n    - \"subDomain\"\n    - \"hostOwner\"\n  deleteHostRequest:\n    title: \"Delete Host\"\n    type: \"object\"\n    properties:\n      hostId:\n        type: \"string\"\n        description: \"Host Id\"\n    required:\n    - \"hostId\"\n  switchUserHostRequest:\n    title: \"Switch User Host\"\n    type: \"object\"\n    properties:\n      hostId:\n        type: \"string\"\n        description: \"Host Id\"\n    required:\n    - \"hostId\"\n  createUserHostRequest:\n    title: \"Create User Host\"\n    type: \"object\"\n    properties:\n      hostId:\n        type: \"string\"\n        description: \"Host Id\"\n      userId:\n        type: \"string\"\n        description: \"User Id\"\n    required:\n    - \"hostId\"\n    - \"userId\"\n  deleteUserHostRequest:\n    title: \"Delete User Host\"\n    type: \"object\"\n    properties:\n      hostId:\n        type: \"string\"\n        description: \"Host Id\"\n      userId:\n        type: \"string\"\n        description: \"User Id\"\n      aggregateVersion:\n        type: \"integer\"\n        description: \"Aggregate Version\"\n    required:\n    - \"hostId\"\n    - \"userId\"\n    - \"aggregateVersion\"\n  operationalStoreRegistrationV2Request:\n    title: \"Register Operational Store Binding\"\n    type: \"object\"\n    additionalProperties: false\n    properties:\n      targetHostId:\n        type: \"string\"\n        format: \"uuid\"\n      engine: {type: \"string\", enum: [\"POSTGRESQL\"]}\n      serverHost:\n        type: \"string\"\n        minLength: 1\n        maxLength: 253\n        pattern: \"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$\"\n      port: {type: \"integer\", minimum: 1, maximum: 65535}\n      expectedDatabase: {type: \"string\", pattern: \"^[a-z][a-z0-9_]{0,62}$\"}\n      tlsMode: {type: \"string\", enum: [\"DISABLE\", \"PREFER\", \"REQUIRE\", \"VERIFY_CA\", \"VERIFY_FULL\"]}\n      credentialSource: {type: \"string\", enum: [\"MOUNTED_FILE\"]}\n      credentialReference: {type: \"string\", minLength: 1, maxLength: 512}\n      minimumSchemaGeneration: {type: \"integer\", minimum: 1, maximum: 9007199254740991}\n      credentialGeneration: {type: \"integer\", minimum: 1, maximum: 9007199254740991}\n    required: [\"targetHostId\", \"engine\", \"serverHost\", \"port\", \"expectedDatabase\",\n      \"tlsMode\", \"credentialSource\", \"credentialReference\",\n      \"minimumSchemaGeneration\", \"credentialGeneration\"]\n  operationalStoreUpdateV2Request:\n    title: \"Update Operational Store Binding\"\n    type: \"object\"\n    additionalProperties: false\n    properties:\n      targetHostId: {type: \"string\", format: \"uuid\"}\n      engine: {type: \"string\", enum: [\"POSTGRESQL\"]}\n      serverHost:\n        type: \"string\"\n        minLength: 1\n        maxLength: 253\n        pattern: \"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$\"\n      port: {type: \"integer\", minimum: 1, maximum: 65535}\n      expectedDatabase: {type: \"string\", pattern: \"^[a-z][a-z0-9_]{0,62}$\"}\n      tlsMode: {type: \"string\", enum: [\"DISABLE\", \"PREFER\", \"REQUIRE\", \"VERIFY_CA\", \"VERIFY_FULL\"]}\n      credentialSource: {type: \"string\", enum: [\"MOUNTED_FILE\"]}\n      credentialReference: {type: \"string\", minLength: 1, maxLength: 512}\n      minimumSchemaGeneration: {type: \"integer\", minimum: 1, maximum: 9007199254740991}\n      credentialGeneration: {type: \"integer\", minimum: 1, maximum: 9007199254740991}\n      aggregateVersion: {type: \"integer\", minimum: 1, maximum: 9007199254740991}\n    required: [\"targetHostId\", \"engine\", \"serverHost\", \"port\", \"expectedDatabase\",\n      \"tlsMode\", \"credentialSource\", \"credentialReference\",\n      \"minimumSchemaGeneration\", \"credentialGeneration\", \"aggregateVersion\"]\n  operationalStoreRegistrationActionV2Request:\n    title: \"Operational Store Registration Action\"\n    type: \"object\"\n    additionalProperties: false\n    properties:\n      targetHostId: {type: \"string\", format: \"uuid\"}\n      aggregateVersion: {type: \"integer\", minimum: 1, maximum: 9007199254740991}\n    required: [\"targetHostId\", \"aggregateVersion\"]\n  operationalStoreBindingActionRequest:\n    title: \"Operational Store Binding Action\"\n    type: \"object\"\n    additionalProperties: false\n    properties:\n      targetHostId:\n        type: \"string\"\n        format: \"uuid\"\n      bindingId:\n        type: \"string\"\n        format: \"uuid\"\n    required: [\"targetHostId\", \"bindingId\"]\n  operationalStoreRetentionActionRequest:\n    title: \"Operational Store Retention Action\"\n    type: \"object\"\n    additionalProperties: false\n    properties:\n      targetHostId:\n        type: \"string\"\n        format: \"uuid\"\n      bindingId:\n        type: \"string\"\n        format: \"uuid\"\n      retentionReason:\n        type: \"string\"\n        maxLength: 512\n    required: [\"targetHostId\", \"bindingId\"]\n  operationalStoreWorkerReportRequest:\n    title: \"Operational Store Worker Report\"\n    type: \"object\"\n    additionalProperties: false\n    properties:\n      targetHostId:\n        type: \"string\"\n        format: \"uuid\"\n      bindingId:\n        type: \"string\"\n        format: \"uuid\"\n      failureCode:\n        type: \"string\"\n        pattern: \"^[A-Z][A-Z0-9_.-]{0,125}$\"\n      providerResourceRef:\n        type: \"string\"\n        maxLength: 512\n      jobId:\n        type: \"string\"\n        format: \"uuid\"\n      leaseOwner:\n        type: \"string\"\n        minLength: 1\n        maxLength: 126\n      fencingToken:\n        type: \"integer\"\n        minimum: 1\n    required: [\"targetHostId\", \"bindingId\", \"jobId\", \"leaseOwner\", \"fencingToken\"]\naction:\n- name: \"createOrg\"\n  version: \"0.1.0\"\n  handler: \"CreateOrg\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/createOrgRequest\"\n    example:\n      domain: \"example.com\"\n      orgName: \"org name\"\n      orgDesc: \"org description\"\n      orgOwner: \"user123\"\n      subDomain: \"test\"\n      hostDesc: \"default host description\"\n      hostOwner: \"user123\"\n- name: \"updateOrg\"\n  version: \"0.1.0\"\n  handler: \"UpdateOrg\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/updateOrgRequest\"\n    example:\n      domain: \"example.com\"\n      orgName: \"org name\"\n      orgDesc: \"org description\"\n      orgOwner: \"user123\"\n- name: \"deleteOrg\"\n  version: \"0.1.0\"\n  handler: \"DeleteOrg\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/deleteOrgRequest\"\n    example:\n      domain: \"example.com\"\n- name: \"createHost\"\n  version: \"0.1.0\"\n  handler: \"CreateHost\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/createHostRequest\"\n    example:\n      domain: \"example.com\"\n      subDomain: \"dev\"\n- name: \"updateHost\"\n  version: \"0.1.0\"\n  handler: \"UpdateHost\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/updateHostRequest\"\n    example:\n      hostId: \"host123\"\n      domain: \"example.com\"\n      subDomain: \"dev\"\n- name: \"deleteHost\"\n  version: \"0.1.0\"\n  handler: \"DeleteHost\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/deleteHostRequest\"\n    example:\n      hostId: \"host123\"\n- name: \"switchUserHost\"\n  version: \"0.1.0\"\n  handler: \"SwitchUserHost\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/switchUserHostRequest\"\n    example:\n      hostId: \"host123\"\n- name: \"createUserHost\"\n  version: \"0.1.0\"\n  handler: \"CreateUserHost\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/createUserHostRequest\"\n    example:\n      hostId: \"host123\"\n      userId: \"user123\"\n- name: \"deleteUserHost\"\n  version: \"0.1.0\"\n  handler: \"DeleteUserHost\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/deleteUserHostRequest\"\n    example:\n      hostId: \"host123\"\n      userId: \"user123\"\n      aggregateVersion: 1\n- name: \"registerOperationalStoreBinding\"\n  version: \"0.2.0\"\n  handler: \"RegisterOperationalStoreBinding\"\n  scope: \"portal.w\"\n  request:\n    schema:\n      $ref: \"#/schemas/operationalStoreRegistrationV2Request\"\n- name: \"updateOperationalStoreBinding\"\n  version: \"0.2.0\"\n  handler: \"UpdateOperationalStoreBinding\"\n  scope: \"portal.w\"\n  request: {schema: {$ref: \"#/schemas/operationalStoreUpdateV2Request\"}}\n- name: \"deactivateOperationalStoreBinding\"\n  version: \"0.2.0\"\n  handler: \"DeactivateOperationalStoreRegistration\"\n  scope: \"portal.w\"\n  request: {schema: {$ref: \"#/schemas/operationalStoreRegistrationActionV2Request\"}}\n- name: \"unregisterOperationalStoreBinding\"\n  version: \"0.2.0\"\n  handler: \"UnregisterOperationalStoreBinding\"\n  scope: \"portal.w\"\n  request: {schema: {$ref: \"#/schemas/operationalStoreRegistrationActionV2Request\"}}\n",
+      "ownerUserId": "01964b05-5532-7c79-8cde-191dcbd421b8",
+      "active": true,
+      "updateUser": "01964b05-5532-7c79-8cde-191dcbd421b8",
+      "updateTs": "2026-09-02T19:50:00.000Z",
+      "endpoints": [
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"createOrg\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/createOrg/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/createOrg/0.1.0\",\"CreateOrg\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"createOrg\",\"version\":\"0.1.0\",\"handler\":\"CreateOrg\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/createOrg/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Create Org\",\"type\":\"object\",\"properties\":{\"domain\":{\"type\":\"string\",\"description\":\"Domain Name\",\"pattern\":\".*\\\\S.*\"},\"orgName\":{\"type\":\"string\",\"description\":\"Org Name\",\"pattern\":\".*\\\\S.*\"},\"orgDesc\":{\"type\":\"string\",\"description\":\"Org Desc\"},\"orgOwner\":{\"type\":\"string\",\"description\":\"Org Owner\",\"pattern\":\".*\\\\S.*\"},\"subDomain\":{\"type\":\"string\",\"description\":\"Default Sub Domain\",\"pattern\":\".*\\\\S.*\"},\"hostDesc\":{\"type\":\"string\",\"description\":\"Default Host Desc\"},\"hostOwner\":{\"type\":\"string\",\"description\":\"Default Host Owner\",\"pattern\":\".*\\\\S.*\"}},\"required\":[\"domain\",\"orgName\",\"orgOwner\",\"subDomain\",\"hostOwner\"]}",
+          "endpointId": "019bbe6a-5f43-7a9e-a9fc-0db373d5a307",
+          "capabilityRef": "LPS1111/createOrg",
+          "endpointName": "createOrg",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "createOrg",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "createOrg": {
+                "endpointId": "LPS1111/createOrg",
+                "operationId": "createOrg",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/createOrg/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Create Org",
+                    "type": "object",
+                    "properties": {
+                      "domain": {
+                        "type": "string",
+                        "description": "Domain Name",
+                        "pattern": ".*\\S.*"
+                      },
+                      "orgName": {
+                        "type": "string",
+                        "description": "Org Name",
+                        "pattern": ".*\\S.*"
+                      },
+                      "orgDesc": {
+                        "type": "string",
+                        "description": "Org Desc"
+                      },
+                      "orgOwner": {
+                        "type": "string",
+                        "description": "Org Owner",
+                        "pattern": ".*\\S.*"
+                      },
+                      "subDomain": {
+                        "type": "string",
+                        "description": "Default Sub Domain",
+                        "pattern": ".*\\S.*"
+                      },
+                      "hostDesc": {
+                        "type": "string",
+                        "description": "Default Host Desc"
+                      },
+                      "hostOwner": {
+                        "type": "string",
+                        "description": "Default Host Owner",
+                        "pattern": ".*\\S.*"
+                      }
+                    },
+                    "required": [
+                      "domain",
+                      "orgName",
+                      "orgOwner",
+                      "subDomain",
+                      "hostOwner"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/createOrg/0.1.0",
+          "routingDomain": "createOrg",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"updateOrg\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/updateOrg/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/updateOrg/0.1.0\",\"UpdateOrg\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"updateOrg\",\"version\":\"0.1.0\",\"handler\":\"UpdateOrg\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/updateOrg/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Update Org\",\"type\":\"object\",\"properties\":{\"domain\":{\"type\":\"string\",\"description\":\"Domain Name\"},\"orgName\":{\"type\":\"string\",\"description\":\"Org Name\"},\"orgDesc\":{\"type\":\"string\",\"description\":\"Org Desc\"},\"orgOwner\":{\"type\":\"string\",\"description\":\"Org Owner\"}},\"required\":[\"domain\",\"orgName\",\"orgOwner\"]}",
+          "endpointId": "019bbe6a-5f43-7b16-a9fd-832928ee8c18",
+          "capabilityRef": "LPS1111/updateOrg",
+          "endpointName": "updateOrg",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "updateOrg",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "updateOrg": {
+                "endpointId": "LPS1111/updateOrg",
+                "operationId": "updateOrg",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/updateOrg/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Update Org",
+                    "type": "object",
+                    "properties": {
+                      "domain": {
+                        "type": "string",
+                        "description": "Domain Name"
+                      },
+                      "orgName": {
+                        "type": "string",
+                        "description": "Org Name"
+                      },
+                      "orgDesc": {
+                        "type": "string",
+                        "description": "Org Desc"
+                      },
+                      "orgOwner": {
+                        "type": "string",
+                        "description": "Org Owner"
+                      }
+                    },
+                    "required": [
+                      "domain",
+                      "orgName",
+                      "orgOwner"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/updateOrg/0.1.0",
+          "routingDomain": "updateOrg",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"deleteOrg\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/deleteOrg/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/deleteOrg/0.1.0\",\"DeleteOrg\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"deleteOrg\",\"version\":\"0.1.0\",\"handler\":\"DeleteOrg\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":true,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":true}",
+          "endpointDesc": "lightapi.net/host/deleteOrg/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Delete Org\",\"type\":\"object\",\"properties\":{\"domain\":{\"type\":\"string\",\"description\":\"Domain Name\"}},\"required\":[\"domain\"]}",
+          "endpointId": "019bbe6a-5f43-7b34-a9fe-9af7de9055fc",
+          "capabilityRef": "LPS1111/deleteOrg",
+          "endpointName": "deleteOrg",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "deleteOrg",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "deleteOrg": {
+                "endpointId": "LPS1111/deleteOrg",
+                "operationId": "deleteOrg",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/deleteOrg/0.1.0",
+                "safety": {
+                  "destructive": true,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Delete Org",
+                    "type": "object",
+                    "properties": {
+                      "domain": {
+                        "type": "string",
+                        "description": "Domain Name"
+                      }
+                    },
+                    "required": [
+                      "domain"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/deleteOrg/0.1.0",
+          "routingDomain": "deleteOrg",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"createHost\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/createHost/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/createHost/0.1.0\",\"CreateHost\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"createHost\",\"version\":\"0.1.0\",\"handler\":\"CreateHost\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/createHost/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Create Host\",\"type\":\"object\",\"properties\":{\"domain\":{\"type\":\"string\",\"description\":\"Domain\"},\"subDomain\":{\"type\":\"string\",\"description\":\"Sub Domain\"},\"hostDesc\":{\"type\":\"string\",\"description\":\"Host Desc\"},\"hostOwner\":{\"type\":\"string\",\"description\":\"Host Owner\"}},\"required\":[\"domain\",\"subDomain\",\"hostOwner\"]}",
+          "endpointId": "019bbe6a-5f43-7b48-a9ff-8be0d1faa101",
+          "capabilityRef": "LPS1111/createHost",
+          "endpointName": "createHost",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "createHost",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "createHost": {
+                "endpointId": "LPS1111/createHost",
+                "operationId": "createHost",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/createHost/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Create Host",
+                    "type": "object",
+                    "properties": {
+                      "domain": {
+                        "type": "string",
+                        "description": "Domain"
+                      },
+                      "subDomain": {
+                        "type": "string",
+                        "description": "Sub Domain"
+                      },
+                      "hostDesc": {
+                        "type": "string",
+                        "description": "Host Desc"
+                      },
+                      "hostOwner": {
+                        "type": "string",
+                        "description": "Host Owner"
+                      }
+                    },
+                    "required": [
+                      "domain",
+                      "subDomain",
+                      "hostOwner"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/createHost/0.1.0",
+          "routingDomain": "createHost",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"updateHost\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/updateHost/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/updateHost/0.1.0\",\"UpdateHost\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"updateHost\",\"version\":\"0.1.0\",\"handler\":\"UpdateHost\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/updateHost/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Update Host\",\"type\":\"object\",\"properties\":{\"hostId\":{\"type\":\"string\",\"description\":\"Host Id\"},\"domain\":{\"type\":\"string\",\"description\":\"Domain\"},\"subDomain\":{\"type\":\"string\",\"description\":\"Sub Domain\"},\"hostDesc\":{\"type\":\"string\",\"description\":\"Host Desc\"},\"hostOwner\":{\"type\":\"string\",\"description\":\"Host Owner\"}},\"required\":[\"hostId\",\"domain\",\"subDomain\",\"hostOwner\"]}",
+          "endpointId": "019bbe6a-5f43-7b58-aa00-f6d33880f31b",
+          "capabilityRef": "LPS1111/updateHost",
+          "endpointName": "updateHost",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "updateHost",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "updateHost": {
+                "endpointId": "LPS1111/updateHost",
+                "operationId": "updateHost",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/updateHost/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Update Host",
+                    "type": "object",
+                    "properties": {
+                      "hostId": {
+                        "type": "string",
+                        "description": "Host Id"
+                      },
+                      "domain": {
+                        "type": "string",
+                        "description": "Domain"
+                      },
+                      "subDomain": {
+                        "type": "string",
+                        "description": "Sub Domain"
+                      },
+                      "hostDesc": {
+                        "type": "string",
+                        "description": "Host Desc"
+                      },
+                      "hostOwner": {
+                        "type": "string",
+                        "description": "Host Owner"
+                      }
+                    },
+                    "required": [
+                      "hostId",
+                      "domain",
+                      "subDomain",
+                      "hostOwner"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/updateHost/0.1.0",
+          "routingDomain": "updateHost",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"deleteHost\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/deleteHost/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/deleteHost/0.1.0\",\"DeleteHost\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"deleteHost\",\"version\":\"0.1.0\",\"handler\":\"DeleteHost\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":true,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":true}",
+          "endpointDesc": "lightapi.net/host/deleteHost/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Delete Host\",\"type\":\"object\",\"properties\":{\"hostId\":{\"type\":\"string\",\"description\":\"Host Id\"}},\"required\":[\"hostId\"]}",
+          "endpointId": "019bbe6a-5f43-7b8b-aa01-1075140b9091",
+          "capabilityRef": "LPS1111/deleteHost",
+          "endpointName": "deleteHost",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "deleteHost",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "deleteHost": {
+                "endpointId": "LPS1111/deleteHost",
+                "operationId": "deleteHost",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/deleteHost/0.1.0",
+                "safety": {
+                  "destructive": true,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Delete Host",
+                    "type": "object",
+                    "properties": {
+                      "hostId": {
+                        "type": "string",
+                        "description": "Host Id"
+                      }
+                    },
+                    "required": [
+                      "hostId"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/deleteHost/0.1.0",
+          "routingDomain": "deleteHost",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"switchUserHost\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/switchUserHost/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/switchUserHost/0.1.0\",\"SwitchUserHost\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"switchUserHost\",\"version\":\"0.1.0\",\"handler\":\"SwitchUserHost\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/switchUserHost/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Switch User Host\",\"type\":\"object\",\"properties\":{\"hostId\":{\"type\":\"string\",\"description\":\"Host Id\"}},\"required\":[\"hostId\"]}",
+          "endpointId": "019bbe6a-5f43-7b9e-aa02-02a2cbbfc04f",
+          "capabilityRef": "LPS1111/switchUserHost",
+          "endpointName": "switchUserHost",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "switchUserHost",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "switchUserHost": {
+                "endpointId": "LPS1111/switchUserHost",
+                "operationId": "switchUserHost",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/switchUserHost/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Switch User Host",
+                    "type": "object",
+                    "properties": {
+                      "hostId": {
+                        "type": "string",
+                        "description": "Host Id"
+                      }
+                    },
+                    "required": [
+                      "hostId"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/switchUserHost/0.1.0",
+          "routingDomain": "switchUserHost",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"createUserHost\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/createUserHost/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/createUserHost/0.1.0\",\"CreateUserHost\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"createUserHost\",\"version\":\"0.1.0\",\"handler\":\"CreateUserHost\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/createUserHost/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Create User Host\",\"type\":\"object\",\"properties\":{\"hostId\":{\"type\":\"string\",\"description\":\"Host Id\"},\"userId\":{\"type\":\"string\",\"description\":\"User Id\"}},\"required\":[\"hostId\",\"userId\"]}",
+          "endpointId": "019bbe6a-5f43-7bae-aa03-5fa332801847",
+          "capabilityRef": "LPS1111/createUserHost",
+          "endpointName": "createUserHost",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "createUserHost",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "createUserHost": {
+                "endpointId": "LPS1111/createUserHost",
+                "operationId": "createUserHost",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/createUserHost/0.1.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Create User Host",
+                    "type": "object",
+                    "properties": {
+                      "hostId": {
+                        "type": "string",
+                        "description": "Host Id"
+                      },
+                      "userId": {
+                        "type": "string",
+                        "description": "User Id"
+                      }
+                    },
+                    "required": [
+                      "hostId",
+                      "userId"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/createUserHost/0.1.0",
+          "routingDomain": "createUserHost",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"deleteUserHost\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/deleteUserHost/0.1.0\",\"semanticKeywords\":[\"lightapi.net/host/deleteUserHost/0.1.0\",\"DeleteUserHost\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"deleteUserHost\",\"version\":\"0.1.0\",\"handler\":\"DeleteUserHost\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":true,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":true}",
+          "endpointDesc": "lightapi.net/host/deleteUserHost/0.1.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Delete User Host\",\"type\":\"object\",\"properties\":{\"hostId\":{\"type\":\"string\",\"description\":\"Host Id\"},\"userId\":{\"type\":\"string\",\"description\":\"User Id\"},\"aggregateVersion\":{\"type\":\"integer\",\"description\":\"Aggregate Version\"}},\"required\":[\"hostId\",\"userId\",\"aggregateVersion\"]}",
+          "endpointId": "019bbe6a-5f43-7be2-aa04-a8952f0c2525",
+          "capabilityRef": "LPS1111/deleteUserHost",
+          "endpointName": "deleteUserHost",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "deleteUserHost",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "deleteUserHost": {
+                "endpointId": "LPS1111/deleteUserHost",
+                "operationId": "deleteUserHost",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/deleteUserHost/0.1.0",
+                "safety": {
+                  "destructive": true,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Delete User Host",
+                    "type": "object",
+                    "properties": {
+                      "hostId": {
+                        "type": "string",
+                        "description": "Host Id"
+                      },
+                      "userId": {
+                        "type": "string",
+                        "description": "User Id"
+                      },
+                      "aggregateVersion": {
+                        "type": "integer",
+                        "description": "Aggregate Version"
+                      }
+                    },
+                    "required": [
+                      "hostId",
+                      "userId",
+                      "aggregateVersion"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/deleteUserHost/0.1.0",
+          "routingDomain": "deleteUserHost",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"registerOperationalStoreBinding\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/registerOperationalStoreBinding/0.2.0\",\"semanticKeywords\":[\"lightapi.net/host/registerOperationalStoreBinding/0.2.0\",\"RegisterOperationalStoreBinding\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"registerOperationalStoreBinding\",\"version\":\"0.2.0\",\"handler\":\"RegisterOperationalStoreBinding\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":true,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/registerOperationalStoreBinding/0.2.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Register Operational Store Binding\",\"type\":\"object\",\"additionalProperties\":false,\"properties\":{\"targetHostId\":{\"type\":\"string\",\"format\":\"uuid\"},\"engine\":{\"type\":\"string\",\"enum\":[\"POSTGRESQL\"]},\"serverHost\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":253,\"pattern\":\"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$\"},\"port\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":65535},\"expectedDatabase\":{\"type\":\"string\",\"pattern\":\"^[a-z][a-z0-9_]{0,62}$\"},\"tlsMode\":{\"type\":\"string\",\"enum\":[\"DISABLE\",\"PREFER\",\"REQUIRE\",\"VERIFY_CA\",\"VERIFY_FULL\"]},\"credentialSource\":{\"type\":\"string\",\"enum\":[\"MOUNTED_FILE\"]},\"credentialReference\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":512},\"minimumSchemaGeneration\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991},\"credentialGeneration\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991}},\"required\":[\"targetHostId\",\"engine\",\"serverHost\",\"port\",\"expectedDatabase\",\"tlsMode\",\"credentialSource\",\"credentialReference\",\"minimumSchemaGeneration\",\"credentialGeneration\"]}",
+          "endpointId": "01a063ab-6482-7ca6-b8a2-07275f7cff6c",
+          "capabilityRef": "LPS1111/registerOperationalStoreBinding",
+          "endpointName": "registerOperationalStoreBinding",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "registerOperationalStoreBinding",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "registerOperationalStoreBinding": {
+                "endpointId": "LPS1111/registerOperationalStoreBinding",
+                "operationId": "registerOperationalStoreBinding",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/registerOperationalStoreBinding/0.2.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": true
+                },
+                "input": {
+                  "schema": {
+                    "title": "Register Operational Store Binding",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "targetHostId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "engine": {
+                        "type": "string",
+                        "enum": [
+                          "POSTGRESQL"
+                        ]
+                      },
+                      "serverHost": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 253,
+                        "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$"
+                      },
+                      "port": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535
+                      },
+                      "expectedDatabase": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                      },
+                      "tlsMode": {
+                        "type": "string",
+                        "enum": [
+                          "DISABLE",
+                          "PREFER",
+                          "REQUIRE",
+                          "VERIFY_CA",
+                          "VERIFY_FULL"
+                        ]
+                      },
+                      "credentialSource": {
+                        "type": "string",
+                        "enum": [
+                          "MOUNTED_FILE"
+                        ]
+                      },
+                      "credentialReference": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      },
+                      "minimumSchemaGeneration": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "credentialGeneration": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "targetHostId",
+                      "engine",
+                      "serverHost",
+                      "port",
+                      "expectedDatabase",
+                      "tlsMode",
+                      "credentialSource",
+                      "credentialReference",
+                      "minimumSchemaGeneration",
+                      "credentialGeneration"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/registerOperationalStoreBinding/0.2.0",
+          "routingDomain": "registerOperationalStoreBinding",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"updateOperationalStoreBinding\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/updateOperationalStoreBinding/0.2.0\",\"semanticKeywords\":[\"lightapi.net/host/updateOperationalStoreBinding/0.2.0\",\"UpdateOperationalStoreBinding\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"updateOperationalStoreBinding\",\"version\":\"0.2.0\",\"handler\":\"UpdateOperationalStoreBinding\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/updateOperationalStoreBinding/0.2.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Update Operational Store Binding\",\"type\":\"object\",\"additionalProperties\":false,\"properties\":{\"targetHostId\":{\"type\":\"string\",\"format\":\"uuid\"},\"engine\":{\"type\":\"string\",\"enum\":[\"POSTGRESQL\"]},\"serverHost\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":253,\"pattern\":\"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$\"},\"port\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":65535},\"expectedDatabase\":{\"type\":\"string\",\"pattern\":\"^[a-z][a-z0-9_]{0,62}$\"},\"tlsMode\":{\"type\":\"string\",\"enum\":[\"DISABLE\",\"PREFER\",\"REQUIRE\",\"VERIFY_CA\",\"VERIFY_FULL\"]},\"credentialSource\":{\"type\":\"string\",\"enum\":[\"MOUNTED_FILE\"]},\"credentialReference\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":512},\"minimumSchemaGeneration\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991},\"credentialGeneration\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991},\"aggregateVersion\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991}},\"required\":[\"targetHostId\",\"engine\",\"serverHost\",\"port\",\"expectedDatabase\",\"tlsMode\",\"credentialSource\",\"credentialReference\",\"minimumSchemaGeneration\",\"credentialGeneration\",\"aggregateVersion\"]}",
+          "endpointId": "01a063ab-6487-73dd-9afa-32192d44ca46",
+          "capabilityRef": "LPS1111/updateOperationalStoreBinding",
+          "endpointName": "updateOperationalStoreBinding",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "updateOperationalStoreBinding",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "updateOperationalStoreBinding": {
+                "endpointId": "LPS1111/updateOperationalStoreBinding",
+                "operationId": "updateOperationalStoreBinding",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/updateOperationalStoreBinding/0.2.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Update Operational Store Binding",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "targetHostId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "engine": {
+                        "type": "string",
+                        "enum": [
+                          "POSTGRESQL"
+                        ]
+                      },
+                      "serverHost": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 253,
+                        "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$"
+                      },
+                      "port": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535
+                      },
+                      "expectedDatabase": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]{0,62}$"
+                      },
+                      "tlsMode": {
+                        "type": "string",
+                        "enum": [
+                          "DISABLE",
+                          "PREFER",
+                          "REQUIRE",
+                          "VERIFY_CA",
+                          "VERIFY_FULL"
+                        ]
+                      },
+                      "credentialSource": {
+                        "type": "string",
+                        "enum": [
+                          "MOUNTED_FILE"
+                        ]
+                      },
+                      "credentialReference": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      },
+                      "minimumSchemaGeneration": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "credentialGeneration": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "aggregateVersion": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "targetHostId",
+                      "engine",
+                      "serverHost",
+                      "port",
+                      "expectedDatabase",
+                      "tlsMode",
+                      "credentialSource",
+                      "credentialReference",
+                      "minimumSchemaGeneration",
+                      "credentialGeneration",
+                      "aggregateVersion"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/updateOperationalStoreBinding/0.2.0",
+          "routingDomain": "updateOperationalStoreBinding",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"deactivateOperationalStoreBinding\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/deactivateOperationalStoreBinding/0.2.0\",\"semanticKeywords\":[\"lightapi.net/host/deactivateOperationalStoreBinding/0.2.0\",\"DeactivateOperationalStoreRegistration\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"deactivateOperationalStoreBinding\",\"version\":\"0.2.0\",\"handler\":\"DeactivateOperationalStoreRegistration\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/deactivateOperationalStoreBinding/0.2.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Operational Store Registration Action\",\"type\":\"object\",\"additionalProperties\":false,\"properties\":{\"targetHostId\":{\"type\":\"string\",\"format\":\"uuid\"},\"aggregateVersion\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991}},\"required\":[\"targetHostId\",\"aggregateVersion\"]}",
+          "endpointId": "01a063ab-6487-7fa1-9afb-d80b6f562b52",
+          "capabilityRef": "LPS1111/deactivateOperationalStoreBinding",
+          "endpointName": "deactivateOperationalStoreBinding",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "deactivateOperationalStoreBinding",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "deactivateOperationalStoreBinding": {
+                "endpointId": "LPS1111/deactivateOperationalStoreBinding",
+                "operationId": "deactivateOperationalStoreBinding",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/deactivateOperationalStoreBinding/0.2.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Operational Store Registration Action",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "targetHostId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "aggregateVersion": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "targetHostId",
+                      "aggregateVersion"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/deactivateOperationalStoreBinding/0.2.0",
+          "routingDomain": "deactivateOperationalStoreBinding",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        },
+        {
+          "toolMetadata": "{\"routing\":{\"domain\":\"unregisterOperationalStoreBinding\",\"semanticNamespace\":\"LPS1111\",\"semanticDescription\":\"lightapi.net/host/unregisterOperationalStoreBinding/0.2.0\",\"semanticKeywords\":[\"lightapi.net/host/unregisterOperationalStoreBinding/0.2.0\",\"UnregisterOperationalStoreBinding\",\"portal.w\",\"write\"],\"semanticWeight\":1.0,\"sensitivityTier\":\"internal\",\"sourceProtocol\":\"lightapi\",\"portal\":{\"host\":\"lightapi.net\",\"service\":\"host\",\"action\":\"unregisterOperationalStoreBinding\",\"version\":\"0.2.0\",\"handler\":\"UnregisterOperationalStoreBinding\",\"transportPath\":\"/portal/command\",\"operation\":\"write\",\"scope\":\"portal.w\",\"skipAuth\":false}},\"safety\":{\"read_only\":false,\"idempotent\":false,\"destructive\":false,\"humanApprovalRequired\":false},\"lifecycle\":{\"status\":\"active\"},\"read_only\":false,\"destructive\":false}",
+          "endpointDesc": "lightapi.net/host/unregisterOperationalStoreBinding/0.2.0",
+          "lifecycleStatus": "active",
+          "toolSchema": "{\"title\":\"Operational Store Registration Action\",\"type\":\"object\",\"additionalProperties\":false,\"properties\":{\"targetHostId\":{\"type\":\"string\",\"format\":\"uuid\"},\"aggregateVersion\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":9007199254740991}},\"required\":[\"targetHostId\",\"aggregateVersion\"]}",
+          "endpointId": "01a063ab-6488-744d-83f2-f86a094d833f",
+          "capabilityRef": "LPS1111/unregisterOperationalStoreBinding",
+          "endpointName": "unregisterOperationalStoreBinding",
+          "httpMethod": "post",
+          "sensitivityTier": "internal",
+          "endpointPath": "/portal/command",
+          "lightapiDocument": {
+            "lightapi": "0.1.0",
+            "profile": "endpoint",
+            "info": {
+              "title": "unregisterOperationalStoreBinding",
+              "namespace": "LPS1111",
+              "version": "1.0.0"
+            },
+            "operations": {
+              "unregisterOperationalStoreBinding": {
+                "endpointId": "LPS1111/unregisterOperationalStoreBinding",
+                "operationId": "unregisterOperationalStoreBinding",
+                "protocol": "http",
+                "method": "POST",
+                "endpoint": "/portal/command",
+                "authentication": {
+                  "type": "none"
+                },
+                "summary": "lightapi.net/host/unregisterOperationalStoreBinding/0.2.0",
+                "safety": {
+                  "destructive": false,
+                  "requiresConfirmation": false
+                },
+                "idempotency": {
+                  "safeToRetry": false
+                },
+                "input": {
+                  "schema": {
+                    "title": "Operational Store Registration Action",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "targetHostId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "aggregateVersion": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "targetHostId",
+                      "aggregateVersion"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "endpoint": "lightapi.net/host/unregisterOperationalStoreBinding/0.2.0",
+          "routingDomain": "unregisterOperationalStoreBinding",
+          "semanticNamespace": "LPS1111",
+          "sourceProtocol": "lightapi",
+          "semanticWeight": 1,
+          "scopes": [
+            "portal.w"
+          ]
+        }
+      ],
+      "aggregateVersion": 1,
+      "newAggregateVersion": 2
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-09-02T19:50:26.388Z",
+    "type": "ApiVersionSpecUpdatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "nonce": "0",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01964b05-552a-7c4b-9184-6857e7f3dc5f|019bbe6a-5f40-7daa-b583-36638067a569",
+    "specversion": "1.0",
+    "aggregatetype": "ApiVersion",
+    "datacontenttype": "application/json",
+    "aggregateversion": 2
+  }
+]

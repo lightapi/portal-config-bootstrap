@@ -17,10 +17,13 @@ operationalStore:
   bindingDigest: ${operationalStore.bindingDigest:}
   hostId: ${operationalStore.hostId:}
   environment: ${operationalStore.environment:dev}
+  serverHost: ${operationalStore.serverHost:postgres}
+  port: ${operationalStore.port:5432}
+  tlsMode: ${operationalStore.tlsMode:DISABLE}
   serviceOwner: ${operationalStore.serviceOwner:light-a2a}
   schema: ${operationalStore.schema:a2a_ops}
   expectedDatabase: ${operationalStore.expectedDatabase:operations}
-  minimumSchemaGeneration: ${operationalStore.minimumSchemaGeneration:1}
+  minimumSchemaGeneration: ${operationalStore.minimumSchemaGeneration:2}
   databaseUrlFile: ${operationalStore.databaseUrlFile:/run/secrets/operational-database-url}
   credentialGeneration: ${operationalStore.credentialGeneration:1}
 authorizationContextKeyFile: ${a2aPolicy.authorizationContextKeyFile:/run/secrets/a2a-authorized-context-key}

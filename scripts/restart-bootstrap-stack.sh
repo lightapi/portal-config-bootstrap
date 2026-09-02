@@ -492,6 +492,9 @@ fi
 
 if [[ "${BOOTSTRAP_DEPLOY_SKIP_EVENT_DELTAS:-false}" != "true" ]]; then
   "$script_dir/import-event-deltas.sh"
+  log "waiting for three operational-store registrations and publications"
+  wait_for_baseline_projection_cursor
+  "$script_dir/wait-for-operational-store-registrations.sh"
 else
   log "skipping event deltas"
 fi

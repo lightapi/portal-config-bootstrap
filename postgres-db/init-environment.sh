@@ -5,7 +5,8 @@ topology="${PORTAL_DB_TOPOLOGY:-separate}"
 environment_name="${PORTAL_DB_ENVIRONMENT:-local}"
 configserver_database="${PORTAL_DB_NAME:-configserver}"
 knowledge_database="${PORTAL_DB_KNOWLEDGE_NAME:-knowledge}"
-operational_database="${PORTAL_DB_OPERATIONAL_NAME:-operations}"
+operational_database_names="${PORTAL_DB_OPERATIONAL_NAMES:-operations,operations_networknt,operations_taiji}"
+IFS=',' read -r -a operational_databases <<<"$operational_database_names"
 database_user="${POSTGRES_USER:-postgres}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -33,11 +34,23 @@ if [[ "$topology" == "shared" && ! "$environment_name" =~ ^[a-z][a-z0-9_]{0,24}$
   echo "init-environment: invalid PORTAL_DB_ENVIRONMENT '$environment_name'" >&2
   exit 2
 fi
-for database_name in "$configserver_database" "$knowledge_database" "$operational_database"; do
+if [[ "${#operational_databases[@]}" != 3 ]]; then
+  echo "init-environment: PORTAL_DB_OPERATIONAL_NAMES must contain exactly three databases" >&2
+  exit 2
+fi
+declare -A seen_operational_databases=()
+for database_name in "$configserver_database" "$knowledge_database" "${operational_databases[@]}"; do
   if [[ ! "$database_name" =~ ^[a-z][a-z0-9_]{0,62}$ ]]; then
     echo "init-environment: invalid database name '$database_name'" >&2
     exit 2
   fi
+done
+for database_name in "${operational_databases[@]}"; do
+  if [[ -n "${seen_operational_databases[$database_name]:-}" ]]; then
+    echo "init-environment: duplicate operational database '$database_name'" >&2
+    exit 2
+  fi
+  seen_operational_databases["$database_name"]=1
 done
 
 if [[ "$topology" == "shared" ]]; then
@@ -53,10 +66,12 @@ else
   knowledge_schema="knowledge"
 fi
 
-if [[ "$operational_database" == "$configserver_database" || "$operational_database" == "$knowledge_database" ]]; then
-  echo "init-environment: the operational database must be separate from Config Server and Knowledge" >&2
-  exit 2
-fi
+for operational_database in "${operational_databases[@]}"; do
+  if [[ "$operational_database" == "$configserver_database" || "$operational_database" == "$knowledge_database" ]]; then
+    echo "init-environment: operational databases must be separate from Config Server and Knowledge" >&2
+    exit 2
+  fi
+done
 
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_dir"' EXIT
@@ -75,7 +90,9 @@ ensure_database "$configserver_database"
 if [[ "$topology" == "separate" ]]; then
   ensure_database "$knowledge_database"
 fi
-ensure_database "$operational_database"
+for operational_database in "${operational_databases[@]}"; do
+  ensure_database "$operational_database"
+done
 
 export PORTAL_DB_CONFIGSERVER_SOURCE="$source_root/configserver.sql"
 if [[ ! -f "$PORTAL_DB_CONFIGSERVER_SOURCE" && -f "$source_root/ddl.sql" ]]; then
@@ -189,7 +206,7 @@ if [[ ! -f "$runtime_grants_source" ]]; then
 fi
 
 if [[ "$topology" == "shared" ]]; then
-  echo "Initialized shared database '$configserver_database' with '$configserver_schema' and '$knowledge_schema', plus operational database '$operational_database'."
+  echo "Initialized shared database '$configserver_database' with '$configserver_schema' and '$knowledge_schema', plus operational databases '$operational_database_names'."
 else
-  echo "Initialized '$configserver_database.$configserver_schema', '$knowledge_database.$knowledge_schema', and operational database '$operational_database'."
+  echo "Initialized '$configserver_database.$configserver_schema', '$knowledge_database.$knowledge_schema', and operational databases '$operational_database_names'."
 fi

@@ -1,0 +1,4 @@
+# database_identity	host_fqdn	database_scope_root_id	binding_id	binding_digest
+operations	dev.lightapi.net	01964b05-552a-7c4b-9184-6857e7f3dc5f	01a06356-a4aa-7528-838e-dfbbe90ec959	sha256:79a39f6ff78c336d6ac9b0dc711115750bf22be954c584fa836930150e3db09e
+operations_networknt	dev.networknt.com	01a04864-b507-74dd-962a-d1e26769a3b4	01a06356-a4ab-787b-9c0b-0320f6786463	sha256:42a1d0a8ce60f42d8cdf51e60a7481984c69a1474a35f494deee0489c36c5f65
+operations_taiji	dev.taiji.io	01a06288-ceec-7de6-85b1-ed12d4dd4732	01a06356-a4ac-7cd9-b5a0-2a38b39fdc73	sha256:cd851be3e6932eeb735bc1dde8673042ade42398c41fc1a5c0ccebe5dea350cb
