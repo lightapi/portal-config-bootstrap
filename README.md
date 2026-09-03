@@ -4,6 +4,10 @@ Linux VM bootstrap deployment for the Light Portal platform, its supporting
 databases, Light Fabric services, and an enterprise Microsoft Entra SSO Portal
 BFF based on `msal-exchange`.
 
+The canonical service, environment-variable, secret, port, dependency, and SSO
+runtime reference is the
+[portal-config-bootstrap operations guide](https://doc.lightapi.net/operations/docker-compose/portal-config-bootstrap.html).
+
 This repository is intentionally separate from `portal-config-dev`:
 
 - `portal-config-dev` remains the public OAuth 2.0 authorization-code reference.
