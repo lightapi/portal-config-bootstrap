@@ -28,6 +28,21 @@ expected_mapping="$(printf '%s\n' \
   'operations_taiji|dev.taiji.io|01a06288-ceec-7de6-85b1-ed12d4dd4732')"
 [[ "$actual_mapping" == "$expected_mapping" ]] || fail "database/Host mapping drifted"
 
+prerequisite_delta="$repo_root/events/deltas/20260902-000-taiji-org-host-prerequisite.json"
+registration_delta="$repo_root/events/deltas/20260902-001-operational-store-default-registrations.json"
+[[ -f "$prerequisite_delta" ]] || fail "Taiji Host prerequisite delta is missing"
+[[ "$prerequisite_delta" < "$registration_delta" ]] || fail "Taiji Host prerequisite must sort before registrations"
+jq -e '
+  length == 2 and
+  .[0].type == "OrgCreatedEvent" and
+  .[0].subject == "taiji.io" and
+  .[0].host == "01964b05-552a-7c4b-9184-6857e7f3dc5f" and
+  .[1].type == "HostCreatedEvent" and
+  .[1].subject == "01a06288-ceec-7de6-85b1-ed12d4dd4732" and
+  .[1].data.hostId == "01a06288-ceec-7de6-85b1-ed12d4dd4732" and
+  .[1].host == "01964b05-552a-7c4b-9184-6857e7f3dc5f"
+' "$prerequisite_delta" >/dev/null || fail "Taiji Host prerequisite event authority drifted"
+
 grep -q 'PORTAL_DB_OPERATIONAL_NAMES: operations,operations_networknt,operations_taiji' "$compose_file" ||
   fail "PostgreSQL does not declare the three-database manifest"
 grep -q 'bootstrap-operational-databases.sh' "$compose_file" ||

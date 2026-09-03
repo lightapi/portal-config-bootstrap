@@ -1,0 +1,47 @@
+[
+  {
+    "id": "01a064f1-42d5-7e0d-8a67-54e1777bf816",
+    "data": {
+      "domain": "taiji.io",
+      "orgDesc": "Taiji post quantum cryptography blockchain",
+      "orgName": "Taiji post quantum cryptography blockchain",
+      "orgOwner": "019a7e70-c133-78a2-a50c-8280423be0a7",
+      "aggregateVersion": 0,
+      "newAggregateVersion": 1
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-09-03T01:45:28.021Z",
+    "type": "OrgCreatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "nonce": "0",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "taiji.io",
+    "specversion": "1.0",
+    "aggregatetype": "Org",
+    "datacontenttype": "application/json",
+    "aggregateversion": 1
+  },
+  {
+    "id": "01a064f1-42d6-7216-91c2-78b8122b09bd",
+    "data": {
+      "domain": "taiji.io",
+      "hostId": "01a06288-ceec-7de6-85b1-ed12d4dd4732",
+      "hostDesc": "dev",
+      "hostOwner": "019a7e70-c133-78a2-a50c-8280423be0a7",
+      "subDomain": "dev",
+      "aggregateVersion": 0,
+      "newAggregateVersion": 1
+    },
+    "host": "01964b05-552a-7c4b-9184-6857e7f3dc5f",
+    "time": "2026-09-03T01:45:28.022Z",
+    "type": "HostCreatedEvent",
+    "user": "01964b05-5532-7c79-8cde-191dcbd421b8",
+    "nonce": "0",
+    "source": "https://github.com/lightapi/light-portal",
+    "subject": "01a06288-ceec-7de6-85b1-ed12d4dd4732",
+    "specversion": "1.0",
+    "aggregatetype": "Host",
+    "datacontenttype": "application/json",
+    "aggregateversion": 1
+  }
+]
