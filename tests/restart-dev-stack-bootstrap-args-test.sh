@@ -13,6 +13,8 @@ if grep -Fq -- 'PRIVATE KEY' "$repo_dir/release-keys/portal-release-2026-01.pem"
 fi
 
 mkdir -p "$test_dir/bin" "$test_dir/data" "$test_dir/release-keys"
+mkdir -p "$test_dir/private-event-deltas"
+printf '[]\n' > "$test_dir/private-event-deltas/unmanifested.json"
 printf '[]\n' > "$test_dir/data/events.json"
 printf 'test public key\n' > "$test_dir/release-keys/release-test.pem"
 mkdir -p "$test_dir/sso/tls" "$test_dir/sso/lightapi/dist" "$test_dir/operational-secrets"
@@ -86,6 +88,7 @@ run_restart() {
   BOOTSTRAP_SSO_ASSET_ROOT="$test_dir/sso" \
   BOOTSTRAP_OPERATIONAL_SECRET_DIR="$test_dir/operational-secrets" \
   BOOTSTRAP_EVENTS_FILE="$test_dir/data/events.json" \
+  PORTAL_INSTANCE_EVENT_DELTA_DIR="$test_dir/private-event-deltas" \
   IMPORT_EVENTS=force \
   BOOTSTRAP_DEPLOY_SKIP_DB_PATCHES=true \
   BOOTSTRAP_DEPLOY_SKIP_EVENT_DELTAS=true \

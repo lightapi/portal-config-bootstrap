@@ -492,11 +492,16 @@ fi
 
 if [[ "${BOOTSTRAP_DEPLOY_SKIP_EVENT_DELTAS:-false}" != "true" ]]; then
   "$script_dir/import-event-deltas.sh"
-  log "waiting for three operational-store registrations and publications"
+  if [[ "${PORTAL_SKIP_INSTANCE_EVENT_DELTAS:-false}" != "true" ]]; then
+    "$script_dir/import-instance-event-deltas.sh"
+  else
+    log "skipping private instance event deltas"
+  fi
+  log "waiting for release/private-delta projection and three operational-store registrations"
   wait_for_baseline_projection_cursor
   "$script_dir/wait-for-operational-store-registrations.sh"
 else
-  log "skipping event deltas"
+  log "skipping release and private instance event deltas"
 fi
 
 if [[ "${BOOTSTRAP_DEPLOY_SKIP_CONFIG_SNAPSHOT_REFRESH:-false}" != "true" ]]; then

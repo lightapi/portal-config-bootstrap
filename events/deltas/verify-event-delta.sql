@@ -58,15 +58,17 @@ BEGIN
               -- hostId is matched by host_id above, or directly for a Host birth
               -- whose command-authority Host legitimately differs. Snapshot exports
               -- can regenerate or omit configId and refresh audit metadata. V2
-              -- operational registrations also normalize away command aliases and
-              -- lifecycle-derived flags; the remaining contract fields, including
-              -- bindingDigest, pin the logical registration.
+              -- operational registrations normalize away command aliases and
+              -- lifecycle-derived flags, while Config Property snapshots omit the
+              -- configName lookup alias. The remaining fields pin the logical state.
               expected.data - 'hostId' - 'aggregateVersion'
                             - 'newAggregateVersion' - 'configId' - 'updateTs'
                             - 'updateUser'
                             - CASE
                                 WHEN expected.event_type = 'OperationalStoreBindingRegisteredEvent'
                                   THEN ARRAY['targetHostId', 'scopeKind', 'active', 'published']::TEXT[]
+                                WHEN expected.event_type = 'ConfigPropertyCreatedEvent'
+                                  THEN ARRAY['configName']::TEXT[]
                                 ELSE ARRAY[]::TEXT[]
                               END
           )

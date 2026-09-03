@@ -54,6 +54,10 @@ grep -Fq "expected.event_type = 'OperationalStoreBindingRegisteredEvent'" "$delt
   fail "event delta verifier does not recognize normalized operational registrations"
 grep -Fq "ARRAY['targetHostId', 'scopeKind', 'active', 'published']::TEXT[]" "$delta_verifier" ||
   fail "event delta verifier does not exclude derived operational registration fields"
+grep -Fq "expected.event_type = 'ConfigPropertyCreatedEvent'" "$delta_verifier" ||
+  fail "event delta verifier does not recognize normalized Config Property births"
+grep -Fq "THEN ARRAY['configName']::TEXT[]" "$delta_verifier" ||
+  fail "event delta verifier treats the Config Property lookup alias as state"
 
 grep -q 'PORTAL_DB_OPERATIONAL_NAMES: operations,operations_networknt,operations_taiji' "$compose_file" ||
   fail "PostgreSQL does not declare the three-database manifest"

@@ -207,3 +207,9 @@ flowchart LR
   audit trail.
 - Replace self-signed certificates and disabled hostname verification before
   promoting beyond a single-user Bootstrap VM.
+
+## Private Host deltas
+
+The signed baseline owns the three canonical Hosts; release deltas remain
+available for older pinned baselines. Keep customer-specific Host exports outside Git in
+`data/private-event-deltas`; see [the private delta guide](events/PRIVATE_INSTANCE_DELTAS.md).
