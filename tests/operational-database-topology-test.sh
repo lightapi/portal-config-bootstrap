@@ -30,6 +30,7 @@ expected_mapping="$(printf '%s\n' \
 
 prerequisite_delta="$repo_root/events/deltas/20260902-000-taiji-org-host-prerequisite.json"
 registration_delta="$repo_root/events/deltas/20260902-001-operational-store-default-registrations.json"
+delta_verifier="$repo_root/events/deltas/verify-event-delta.sql"
 [[ -f "$prerequisite_delta" ]] || fail "Taiji Host prerequisite delta is missing"
 [[ "$prerequisite_delta" < "$registration_delta" ]] || fail "Taiji Host prerequisite must sort before registrations"
 jq -e '
@@ -42,6 +43,17 @@ jq -e '
   .[1].data.hostId == "01a06288-ceec-7de6-85b1-ed12d4dd4732" and
   .[1].host == "01964b05-552a-7c4b-9184-6857e7f3dc5f"
 ' "$prerequisite_delta" >/dev/null || fail "Taiji Host prerequisite event authority drifted"
+[[ -f "$delta_verifier" ]] || fail "event delta verifier is missing"
+grep -Fq "expected.event_type = 'HostCreatedEvent'" "$delta_verifier" ||
+  fail "event delta verifier does not recognize corrected Host-birth authority"
+grep -Fq "equivalent.payload -> 'data' ->> 'hostId' = expected.data ->> 'hostId'" "$delta_verifier" ||
+  fail "event delta verifier does not pin corrected Host births by data.hostId"
+grep -Fq -- "- 'updateUser'" "$delta_verifier" ||
+  fail "event delta verifier treats regenerated audit ownership as entity identity"
+grep -Fq "expected.event_type = 'OperationalStoreBindingRegisteredEvent'" "$delta_verifier" ||
+  fail "event delta verifier does not recognize normalized operational registrations"
+grep -Fq "ARRAY['targetHostId', 'scopeKind', 'active', 'published']::TEXT[]" "$delta_verifier" ||
+  fail "event delta verifier does not exclude derived operational registration fields"
 
 grep -q 'PORTAL_DB_OPERATIONAL_NAMES: operations,operations_networknt,operations_taiji' "$compose_file" ||
   fail "PostgreSQL does not declare the three-database manifest"

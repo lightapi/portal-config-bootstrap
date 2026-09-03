@@ -40,20 +40,36 @@ BEGIN
      AND NOT EXISTS (
        SELECT 1
          FROM event_store_t equivalent
-        WHERE equivalent.host_id = expected.host_id
+        WHERE (
+                equivalent.host_id = expected.host_id
+                OR (
+                  expected.event_type = 'HostCreatedEvent'
+                  AND equivalent.event_type = expected.event_type
+                  AND equivalent.payload -> 'data' ->> 'hostId' = expected.data ->> 'hostId'
+                )
+              )
           AND equivalent.aggregate_id = expected.aggregate_id
           AND equivalent.aggregate_version >= expected.aggregate_version
           AND (
             equivalent.aggregate_version > expected.aggregate_version
             OR equivalent.event_type = expected.event_type
           )
-          AND (equivalent.payload -> 'data') @>
-              -- hostId is matched by host_id above. Snapshot exports can regenerate
-              -- or omit configId and refresh updateTs; the aggregate subject and
-              -- remaining identity fields pin the logical entity without treating
-              -- those transport/audit fields as state.
+          AND (equivalent.payload -> 'data') @> (
+              -- hostId is matched by host_id above, or directly for a Host birth
+              -- whose command-authority Host legitimately differs. Snapshot exports
+              -- can regenerate or omit configId and refresh audit metadata. V2
+              -- operational registrations also normalize away command aliases and
+              -- lifecycle-derived flags; the remaining contract fields, including
+              -- bindingDigest, pin the logical registration.
               expected.data - 'hostId' - 'aggregateVersion'
                             - 'newAggregateVersion' - 'configId' - 'updateTs'
+                            - 'updateUser'
+                            - CASE
+                                WHEN expected.event_type = 'OperationalStoreBindingRegisteredEvent'
+                                  THEN ARRAY['targetHostId', 'scopeKind', 'active', 'published']::TEXT[]
+                                ELSE ARRAY[]::TEXT[]
+                              END
+          )
      );
 
   IF missing_events IS NOT NULL THEN
