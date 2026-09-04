@@ -1,6 +1,7 @@
 # Operational Store Assets
 
-Bundle 2.0.0 records a Host-scoped CUSTOMER_MANAGED binding. Environment is
+Bundle 2.0.0 introduced the Host-scoped CUSTOMER_MANAGED binding. Bundle 2.1.0
+adds the Workflow-owned endpoint-resolution projection. Environment remains
 runtime-instance routing metadata and is not part of database ownership.
 
 The pinned bundle under `bundle/` is applied to all three local operational

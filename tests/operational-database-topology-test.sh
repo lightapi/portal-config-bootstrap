@@ -10,6 +10,7 @@ fi
 compose_file="$stack_root/docker-compose.yml"
 operations_root="$stack_root/postgres-db/operations"
 manifest="$operations_root/operational-databases.tsv"
+workflow_projection_script="$operations_root/bin/publish-workflow-projections.sh"
 readiness_script="$repo_root/scripts/wait-for-operational-store-registrations.sh"
 
 fail() {
@@ -65,6 +66,38 @@ grep -q 'bootstrap-operational-databases.sh' "$compose_file" ||
   fail "multi-database bootstrap is not wired"
 grep -q 'validate-operational-databases.sh' "$compose_file" ||
   fail "multi-database validation is not wired"
+grep -q 'OPERATIONAL_BUNDLE_VERSION: 2.1.0' "$compose_file" ||
+  fail "Compose does not select the Workflow projection bundle"
+[[ -x "$workflow_projection_script" ]] ||
+  fail "Workflow projection publisher is missing or not executable"
+grep -q '^  workflow-projection-sync:' "$compose_file" ||
+  fail "periodic Workflow projection publication is not wired"
+grep -q '0005_workflow_catalog_projection' "$workflow_projection_script" ||
+  fail "Workflow catalog projection migration is not enforced"
+grep -q '0006_workflow_endpoint_resolution' "$workflow_projection_script" ||
+  fail "Workflow endpoint resolution migration is not enforced"
+grep -q 'workflow_projection_source.tool_t' "$workflow_projection_script" ||
+  fail "Workflow projection does not import the Config Server tool catalog"
+grep -q "operation.value->'authentication'->>'type'='none'" "$workflow_projection_script" ||
+  fail "compiled endpoint projection does not constrain authentication"
+grep -q "av.protocol IN ('http','https')" "$workflow_projection_script" ||
+  fail "compiled endpoint projection does not constrain protocols"
+grep -q 'resolution_document' "$workflow_projection_script" ||
+  fail "compiled endpoint projection omits runtime resolution metadata"
+grep -q 'SELECT DISTINCT ON (b.host_id,b.binding_id,t.capability_ref)' "$workflow_projection_script" ||
+  fail "compiled endpoint projection is not conflict-safe"
+grep -q 'AND b.active AND g.active AND t.active AND e.active AND av.active AND a.active' "$workflow_projection_script" ||
+  fail "compiled endpoint projection does not enforce active source rows"
+grep -q 'target operational database identity is unavailable or ambiguous' "$workflow_projection_script" ||
+  fail "Workflow projection identity ambiguity lacks a clear failure"
+grep -q 'WORKFLOW_PROJECTION_MINIMUM_DEFINITIONS: "0"' "$compose_file" ||
+  fail "Workflow projection sync does not permit an initially empty Portal catalog"
+grep -q 'WORKFLOW_PROJECTION_MINIMUM_BINDINGS: "0"' "$compose_file" ||
+  fail "Workflow projection sync does not permit initially empty bindings"
+grep -q 'WORKFLOW_PROJECTION_MINIMUM_ENDPOINTS: "0"' "$compose_file" ||
+  fail "Workflow projection sync does not permit initially empty endpoints"
+grep -q 'WORKFLOW_PROJECTION_REFRESH_SECONDS: "30"' "$compose_file" ||
+  fail "Workflow projection refresh interval drifted"
 grep -q 'operational-hosts/\$${OPERATIONAL_RUNTIME_HOST:-dev.lightapi.net}' "$compose_file" ||
   fail "runtime credentials are not selected by Host FQDN"
 grep -q '/run/secrets/operational-database-url' "$compose_file" ||
@@ -81,6 +114,7 @@ fi
 
 bash -n "$stack_root/postgres-db/init-environment.sh"
 bash -n "$operations_root/bin/bootstrap-operational-databases.sh"
+bash -n "$workflow_projection_script"
 bash -n "$operations_root/bin/validate-operational-databases.sh"
 
 if command -v docker >/dev/null 2>&1; then

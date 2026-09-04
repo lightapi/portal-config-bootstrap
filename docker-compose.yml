@@ -67,7 +67,7 @@ services:
       POSTGRES_USER: postgres
       PGPASSWORD: secret
       OPERATIONAL_CONTRACT_GENERATION: 2
-      OPERATIONAL_BUNDLE_VERSION: 2.0.0
+      OPERATIONAL_BUNDLE_VERSION: 2.1.0
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,6 +89,43 @@ services:
       operational-store-bootstrap:
         condition: service_completed_successfully
     restart: "no"
+
+  workflow-projection-sync:
+    image: timescale/timescaledb:latest-pg17
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        while true; do
+          if /opt/operational-store/bin/publish-workflow-projections.sh; then
+            touch /tmp/workflow-projection-ready
+          else
+            rm -f /tmp/workflow-projection-ready
+          fi
+          sleep "$${WORKFLOW_PROJECTION_REFRESH_SECONDS:-30}"
+        done
+    volumes:
+      - ./postgres-db/operations/bin:/opt/operational-store/bin:ro
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: postgres
+      PGPASSWORD: secret
+      WORKFLOW_PROJECTION_SOURCE_DATABASE: configserver
+      WORKFLOW_PROJECTION_TARGET_DATABASE: operations
+      WORKFLOW_PROJECTION_MINIMUM_DEFINITIONS: "0"
+      WORKFLOW_PROJECTION_MINIMUM_BINDINGS: "0"
+      WORKFLOW_PROJECTION_MINIMUM_ENDPOINTS: "0"
+      WORKFLOW_PROJECTION_REFRESH_SECONDS: "30"
+    depends_on:
+      operational-store-bootstrap:
+        condition: service_completed_successfully
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/workflow-projection-ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+    restart: unless-stopped
 
   operational-runtime-secrets-init:
     image: timescale/timescaledb:latest-pg17
@@ -356,6 +393,8 @@ services:
         condition: service_healthy
       operational-schema-validation:
         condition: service_completed_successfully
+      workflow-projection-sync:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8436/ready || exit 1"]
       interval: 10s
