@@ -45697,6 +45697,108 @@ CREATE TRIGGER operational_store_legacy_profile_write_guard_trg
 BEFORE INSERT OR UPDATE OR DELETE ON public.operational_store_profile_t
 FOR EACH ROW EXECUTE FUNCTION public.operational_store_legacy_write_guard();
 
+-- Authoritative LLM gateway trust and endpoint policy; generated bindings stay derived.
+CREATE TABLE public.llm_gateway_security_profile_t (
+    host_id uuid NOT NULL,
+    security_profile_id uuid NOT NULL,
+    environment varchar(16) NOT NULL,
+    user_issuer text NOT NULL,
+    user_audience text NOT NULL,
+    schema_version integer NOT NULL DEFAULT 1,
+    aggregate_version bigint NOT NULL,
+    active boolean NOT NULL DEFAULT true,
+    update_user varchar(255),
+    update_ts timestamptz,
+    delete_user varchar(255),
+    delete_ts timestamptz
+);
+CREATE TABLE public.llm_gateway_delegation_policy_t (
+    host_id uuid NOT NULL,
+    instance_id uuid NOT NULL,
+    security_profile_id uuid NOT NULL,
+    endpoints jsonb NOT NULL,
+    schema_version integer NOT NULL DEFAULT 1,
+    migration_provenance jsonb,
+    aggregate_version bigint NOT NULL,
+    active boolean NOT NULL DEFAULT true,
+    update_user varchar(255),
+    update_ts timestamptz,
+    delete_user varchar(255),
+    delete_ts timestamptz
+);
+CREATE TABLE public.llm_gateway_ownership_release_t (
+    host_id uuid NOT NULL,
+    ownership_release_id uuid NOT NULL,
+    instance_id uuid NOT NULL,
+    instance_publication_id uuid NOT NULL,
+    config_properties jsonb NOT NULL,
+    aggregate_version bigint NOT NULL,
+    active boolean NOT NULL DEFAULT true,
+    update_user varchar(255),
+    update_ts timestamptz,
+    delete_user varchar(255),
+    delete_ts timestamptz
+);
+
+ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.host_t(host_id);
+ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_user_issuer_check CHECK (length(trim(user_issuer)) > 0);
+ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_user_audience_check CHECK (length(trim(user_audience)) > 0);
+ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_schema_version_check CHECK (schema_version = 1);
+ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_pkey PRIMARY KEY (host_id, security_profile_id);
+ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_schema_version_check CHECK (schema_version = 1);
+ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_endpoints_check CHECK (jsonb_typeof(endpoints) = 'object');
+ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_pkey PRIMARY KEY (host_id, instance_id);
+ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_instance_fkey FOREIGN KEY (host_id, instance_id) REFERENCES public.instance_t(host_id, instance_id);
+ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_profile_fkey FOREIGN KEY (host_id, security_profile_id)
+        REFERENCES public.llm_gateway_security_profile_t(host_id, security_profile_id);
+ALTER TABLE ONLY public.llm_gateway_ownership_release_t ADD CONSTRAINT llm_gateway_ownership_release_t_pkey PRIMARY KEY (host_id, ownership_release_id);
+ALTER TABLE ONLY public.llm_gateway_ownership_release_t ADD CONSTRAINT llm_gateway_ownership_release_t_instance_fkey FOREIGN KEY (host_id, instance_id) REFERENCES public.instance_t(host_id, instance_id);
+CREATE UNIQUE INDEX llm_gateway_security_profile_active_environment_idx ON public.llm_gateway_security_profile_t (host_id, environment) WHERE active IS TRUE;
+
+COMMENT ON TABLE public.llm_gateway_security_profile_t IS
+    'Event-authored user trust profile shared by host and logical environment.';
+COMMENT ON TABLE public.llm_gateway_delegation_policy_t IS
+    'Event-authored per-instance endpoint requirements referencing an environment trust profile.';
+COMMENT ON TABLE public.llm_gateway_ownership_release_t IS
+    'Idempotent ownership-release projection retaining exact generic baseline material.';
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.host_id IS 'Host owning this record.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.security_profile_id IS 'Stable event aggregate identifier for the shared trust profile.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.environment IS 'Logical environment matching the gateway instance environment.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.user_issuer IS 'Trusted delegated user token issuer.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.user_audience IS 'Trusted delegated user token audience.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.schema_version IS 'Version of the authoring contract.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.aggregate_version IS 'Last applied event aggregate version.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.active IS 'Whether this record is active.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.update_user IS 'Actor responsible for the latest update.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.update_ts IS 'Timestamp of the latest update.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.delete_user IS 'Actor responsible for soft deletion.';
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.delete_ts IS 'Timestamp of soft deletion.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.host_id IS 'Host owning this record.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.instance_id IS 'Gateway instance within the owning host.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.security_profile_id IS 'Stable event aggregate identifier for the shared trust profile.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.endpoints IS 'Explicit workload-token requirement for each supported inference endpoint.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.schema_version IS 'Version of the authoring contract.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.migration_provenance IS 'Evidence retained from authoring migration.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.aggregate_version IS 'Last applied event aggregate version.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.active IS 'Whether this record is active.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.update_user IS 'Actor responsible for the latest update.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.update_ts IS 'Timestamp of the latest update.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.delete_user IS 'Actor responsible for soft deletion.';
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.delete_ts IS 'Timestamp of soft deletion.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.host_id IS 'Host owning this record.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.ownership_release_id IS 'Stable identifier of the ownership release event.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.instance_id IS 'Gateway instance within the owning host.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.instance_publication_id IS 'Publication application whose ownership was released.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.config_properties IS 'Exact property values and stream versions retained as generic baselines.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.aggregate_version IS 'Last applied event aggregate version.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.active IS 'Whether this record is active.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.update_user IS 'Actor responsible for the latest update.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.update_ts IS 'Timestamp of the latest update.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.delete_user IS 'Actor responsible for soft deletion.';
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.delete_ts IS 'Timestamp of soft deletion.';
+
+
 \unrestrict hH5RPVy0DmoyafcyXfCcG4i9sdKgsYSKTzXXVVYP7XpvO7UaT9TIlRIkHZQaYB0
 
 
