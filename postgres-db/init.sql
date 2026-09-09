@@ -21161,9 +21161,7 @@ CREATE TABLE public.llm_provider_deployment_t (
     provider_account_id uuid NOT NULL,
     deployment_name character varying(126) NOT NULL,
     provider_type character varying(32) NOT NULL,
-    provider_protocol character varying(32) NOT NULL,
     physical_model_id character varying(255) NOT NULL,
-    base_url text NOT NULL,
     region character varying(64),
     transport_bounds jsonb DEFAULT '{}'::jsonb NOT NULL,
     aggregate_version bigint DEFAULT 1 NOT NULL,
@@ -21178,13 +21176,11 @@ CREATE TABLE public.llm_provider_deployment_t (
     readiness_policy character varying(32) NOT NULL,
     expected_sidecar jsonb,
     bedrock_policy jsonb,
-    CONSTRAINT llm_provider_deployment_bedrock_policy_shape_ck CHECK (((((provider_protocol)::text = 'bedrock_converse'::text) = (bedrock_policy IS NOT NULL)) AND ((bedrock_policy IS NULL) OR (jsonb_typeof(bedrock_policy) = 'object'::text)))),
-    CONSTRAINT llm_provider_deployment_provider_protocol_ck CHECK (((provider_protocol)::text = ANY (ARRAY[('openai_chat'::character varying)::text, ('openai_responses'::character varying)::text, ('openai_embeddings'::character varying)::text, ('anthropic_messages'::character varying)::text, ('bedrock_converse'::character varying)::text]))),
+    CONSTRAINT llm_provider_deployment_bedrock_policy_shape_ck CHECK (bedrock_policy IS NULL OR jsonb_typeof(bedrock_policy) = 'object'),
     CONSTRAINT llm_provider_deployment_readiness_ck CHECK (((readiness_policy)::text = ANY (ARRAY[('IMMEDIATE'::character varying)::text, ('WARM_BEFORE_ELIGIBLE'::character varying)::text]))),
     CONSTRAINT llm_provider_deployment_runtime_capacity_ck CHECK (((jsonb_typeof(runtime_capacity) = 'object'::text) AND ((runtime_capacity ->> 'maxParallelRequests'::text) ~ '^[1-9][0-9]*$'::text) AND ((runtime_capacity ->> 'maxQueuedRequests'::text) ~ '^[1-9][0-9]*$'::text) AND ((runtime_capacity ->> 'coldStartTimeoutMs'::text) ~ '^[1-9][0-9]*$'::text) AND ((runtime_capacity ->> 'streamSetupTimeoutMs'::text) ~ '^[1-9][0-9]*$'::text) AND ((runtime_capacity ->> 'requestTimeoutMs'::text) ~ '^[1-9][0-9]*$'::text))),
     CONSTRAINT llm_provider_deployment_sidecar_shape_ck CHECK (((expected_sidecar IS NULL) OR (jsonb_typeof(expected_sidecar) = 'object'::text))),
     CONSTRAINT llm_provider_deployment_t_aggregate_version_check CHECK ((aggregate_version > 0)),
-    CONSTRAINT llm_provider_deployment_t_base_url_check CHECK ((base_url ~ '^https://'::text)),
     CONSTRAINT llm_provider_deployment_t_transport_bounds_check CHECK ((jsonb_typeof(transport_bounds) = 'object'::text))
 );
 
@@ -21239,24 +21235,10 @@ COMMENT ON COLUMN public.llm_provider_deployment_t.provider_type IS 'Provider Ty
 
 
 --
--- Name: COLUMN llm_provider_deployment_t.provider_protocol; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_deployment_t.provider_protocol IS 'Provider Protocol value for this llm provider deployment record.';
-
-
---
 -- Name: COLUMN llm_provider_deployment_t.physical_model_id; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.llm_provider_deployment_t.physical_model_id IS 'Identifier for the related physical model.';
-
-
---
--- Name: COLUMN llm_provider_deployment_t.base_url; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_deployment_t.base_url IS 'Base Url value for this llm provider deployment record.';
 
 
 --
@@ -21563,26 +21545,236 @@ COMMENT ON COLUMN public.llm_public_alias_t.bound_workload_principal IS 'Bound W
 
 
 --
+-- Name: llm_provider_endpoint_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.llm_provider_endpoint_t (
+    host_id uuid NOT NULL,
+    provider_endpoint_id uuid NOT NULL,
+    provider_account_id uuid NOT NULL,
+    endpoint_name character varying(126) NOT NULL,
+    provider_type character varying(32) NOT NULL,
+    provider_protocol character varying(32) NOT NULL,
+    aws_region character varying(64),
+    base_url text NOT NULL,
+    headers jsonb DEFAULT '{}'::jsonb NOT NULL,
+    endpoint_auth_mode character varying(16) DEFAULT 'BEARER'::character varying NOT NULL,
+    api_key_header character varying(32),
+    network_profile_mode character varying(24) DEFAULT 'PUBLIC_TLS'::character varying NOT NULL,
+    network_termination character varying(32) DEFAULT 'NATIVE'::character varying NOT NULL,
+    network_zone_id uuid,
+    trust_bundle_reference character varying(1024),
+    trust_bundle_sha256 character varying(64),
+    pool_idle_timeout_ms bigint DEFAULT 30000 NOT NULL,
+    client_refresh_interval_ms bigint DEFAULT 300000 NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    CONSTRAINT llm_provider_endpoint_auth_ck CHECK ((((endpoint_auth_mode)::text = ANY (ARRAY[('NONE'::character varying)::text, ('BEARER'::character varying)::text, ('API_KEY'::character varying)::text, ('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text])) AND (((endpoint_auth_mode)::text = 'API_KEY'::text) = (api_key_header IS NOT NULL)) AND ((api_key_header IS NULL) OR ((api_key_header)::text = ANY (ARRAY[('authorization'::character varying)::text, ('x-api-key'::character varying)::text]))))),
+    CONSTRAINT llm_provider_endpoint_bedrock_ck CHECK (((((provider_type)::text = 'aws_bedrock'::text) = ((provider_protocol)::text = 'bedrock_converse'::text)) AND ((((provider_type)::text = 'aws_bedrock'::text) AND ((aws_region)::text ~ '^[a-z0-9]+(-[a-z0-9]+)+-[0-9]+$'::text) AND ((endpoint_auth_mode)::text = ANY (ARRAY[('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text]))) OR (((provider_type)::text <> 'aws_bedrock'::text) AND (aws_region IS NULL) AND ((endpoint_auth_mode)::text <> ALL (ARRAY[('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text])))))),
+    CONSTRAINT llm_provider_endpoint_pool_ck CHECK (((pool_idle_timeout_ms > 0) AND (client_refresh_interval_ms >= pool_idle_timeout_ms))),
+    CONSTRAINT llm_provider_endpoint_profile_ck CHECK ((((network_profile_mode)::text = ANY (ARRAY[('PUBLIC_TLS'::character varying)::text, ('PRIVATE_TLS'::character varying)::text, ('PRIVATE_PLAINTEXT'::character varying)::text])) AND ((network_termination)::text = ANY (ARRAY[('NATIVE'::character varying)::text, ('LIGHT_GATEWAY_SIDECAR'::character varying)::text])) AND ((((network_profile_mode)::text = 'PUBLIC_TLS'::text) AND (base_url ~ '^https://'::text) AND (network_zone_id IS NULL)) OR (((network_profile_mode)::text = 'PRIVATE_TLS'::text) AND (base_url ~ '^https://'::text) AND (network_zone_id IS NOT NULL)) OR (((network_profile_mode)::text = 'PRIVATE_PLAINTEXT'::text) AND (base_url ~ '^http://'::text) AND (network_zone_id IS NOT NULL) AND ((endpoint_auth_mode)::text = 'NONE'::text))))),
+    CONSTRAINT llm_provider_endpoint_protocol_ck CHECK (((provider_protocol)::text = ANY (ARRAY[('openai_chat'::character varying)::text, ('openai_responses'::character varying)::text, ('openai_embeddings'::character varying)::text, ('anthropic_messages'::character varying)::text, ('bedrock_converse'::character varying)::text]))),
+    CONSTRAINT llm_provider_endpoint_t_aggregate_version_check CHECK ((aggregate_version > 0)),
+    CONSTRAINT llm_provider_endpoint_t_headers_check CHECK ((jsonb_typeof(headers) = 'object'::text)),
+    CONSTRAINT llm_provider_endpoint_trust_ck CHECK (((((network_profile_mode)::text = 'PRIVATE_TLS'::text) = ((trust_bundle_reference IS NOT NULL) AND (trust_bundle_sha256 IS NOT NULL))) AND ((trust_bundle_sha256 IS NULL) OR ((trust_bundle_sha256)::text ~ '^[0-9a-f]{64}$'::text))))
+);
+
+
+--
+-- Name: TABLE llm_provider_endpoint_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.llm_provider_endpoint_t IS 'Stores llm provider endpoint records used by the Portal GenAI control plane and Light Gateway runtime.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.host_id IS 'Tenant host identifier that scopes this record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.provider_endpoint_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_endpoint_id IS 'Identifier for the related provider endpoint.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.provider_account_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_account_id IS 'Identifier for the related provider account.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.endpoint_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.endpoint_name IS 'Endpoint Name value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.provider_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_type IS 'Provider Type value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.provider_protocol; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_protocol IS 'Provider Protocol value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.aws_region; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.aws_region IS 'Aws Region value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.base_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.base_url IS 'Base Url value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.headers; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.headers IS 'Headers value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.endpoint_auth_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.endpoint_auth_mode IS 'Endpoint Auth Mode value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.api_key_header; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.api_key_header IS 'Api Key Header value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.network_profile_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.network_profile_mode IS 'Network Profile Mode value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.network_termination; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.network_termination IS 'Network Termination value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.network_zone_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.network_zone_id IS 'Identifier for the related network zone.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.trust_bundle_reference; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.trust_bundle_reference IS 'Trust Bundle Reference value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.trust_bundle_sha256; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.trust_bundle_sha256 IS 'Trust Bundle Sha256 value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.pool_idle_timeout_ms; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.pool_idle_timeout_ms IS 'Pool Idle Timeout Ms value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.client_refresh_interval_ms; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.client_refresh_interval_ms IS 'Client Refresh Interval Ms value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.aggregate_version IS 'Version value for aggregate.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.active IS 'Indicates whether this record is active.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.update_user IS 'User or service principal that last updated this record.';
+
+
+
+--
 -- Name: knowledge_qualified_embedding_alias_v; Type: VIEW; Schema: public; Owner: -
 --
 
 CREATE VIEW public.knowledge_qualified_embedding_alias_v AS
- SELECT alias.host_id,
-    alias.host_id AS alias_owner_host_id,
-    alias.public_alias_id,
-    alias.alias_name,
-    (alias.required_capabilities -> 'embeddingSpace'::text) AS embedding_space,
-    true AS active,
-    alias.update_ts,
-    count(*) AS eligible_route_count
-   FROM ((((public.llm_public_alias_t alias
-     JOIN public.llm_alias_route_t route ON (((route.host_id = alias.host_id) AND (route.public_alias_id = alias.public_alias_id) AND (route.active IS TRUE))))
-     JOIN public.llm_provider_deployment_t deployment ON (((deployment.host_id = route.host_id) AND (deployment.provider_deployment_id = route.provider_deployment_id) AND (deployment.active IS TRUE) AND ((deployment.provider_protocol)::text = 'openai_embeddings'::text))))
-     JOIN public.llm_model_registration_t registration ON (((registration.host_id = deployment.host_id) AND (registration.model_registration_id = deployment.model_registration_id) AND (registration.active IS TRUE))))
-     JOIN public.llm_model_t model ON (((model.model_id = registration.model_id) AND (model.active IS TRUE))))
-  WHERE ((alias.active IS TRUE) AND (alias.operations ? 'embed'::text) AND (alias.require_expected_embedding_space IS TRUE) AND ((((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'space'::text) = (alias.required_capabilities -> 'embeddingSpace'::text)))
-  GROUP BY alias.host_id, alias.public_alias_id, alias.alias_name, (alias.required_capabilities -> 'embeddingSpace'::text), alias.update_ts
- HAVING bool_and(((jsonb_array_length(COALESCE((((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'supportedDimensions'::text), (((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'dimensions'::text))) = 1) AND (COALESCE((((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'supportedDimensions'::text), (((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'dimensions'::text)) @> jsonb_build_array((((alias.required_capabilities -> 'embeddingSpace'::text) ->> 'dimension'::text))::integer))));
+ SELECT alias.host_id, alias.host_id AS alias_owner_host_id, alias.public_alias_id, alias.alias_name,
+        alias.required_capabilities->'embeddingSpace' AS embedding_space,
+        true AS active, alias.update_ts, count(*) AS eligible_route_count
+ FROM public.llm_public_alias_t alias
+ JOIN public.llm_alias_route_t route ON route.host_id=alias.host_id
+  AND route.public_alias_id=alias.public_alias_id AND route.active IS TRUE
+ JOIN public.llm_provider_deployment_t deployment ON deployment.host_id=route.host_id
+  AND deployment.provider_deployment_id=route.provider_deployment_id AND deployment.active IS TRUE
+ JOIN public.llm_provider_endpoint_t endpoint ON endpoint.host_id=deployment.host_id
+  AND endpoint.provider_endpoint_id=deployment.provider_endpoint_id AND endpoint.active IS TRUE
+  AND endpoint.provider_protocol='openai_embeddings'
+ JOIN public.llm_model_registration_t registration ON registration.host_id=deployment.host_id
+  AND registration.model_registration_id=deployment.model_registration_id AND registration.active IS TRUE
+ JOIN public.llm_model_t model ON model.model_id=registration.model_id AND model.active IS TRUE
+ WHERE alias.active IS TRUE AND alias.operations ? 'embed' AND alias.require_expected_embedding_space IS TRUE
+  AND (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'space'
+       = alias.required_capabilities->'embeddingSpace'
+ GROUP BY alias.host_id,alias.public_alias_id,alias.alias_name,alias.required_capabilities->'embeddingSpace',alias.update_ts
+ HAVING bool_and(
+  jsonb_array_length(COALESCE(
+   (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'supportedDimensions',
+   (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'dimensions'))=1
+  AND COALESCE(
+   (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'supportedDimensions',
+   (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'dimensions')
+   @> jsonb_build_array((alias.required_capabilities->'embeddingSpace'->>'dimension')::integer));
 
 
 --
@@ -23394,205 +23586,6 @@ COMMENT ON COLUMN public.llm_provider_credential_t.reasoning_key_set_state IS 'R
 --
 
 COMMENT ON COLUMN public.llm_provider_credential_t.reasoning_state_limits IS 'Reasoning State Limits value for this llm provider credential record.';
-
-
---
--- Name: llm_provider_endpoint_t; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.llm_provider_endpoint_t (
-    host_id uuid NOT NULL,
-    provider_endpoint_id uuid NOT NULL,
-    provider_account_id uuid NOT NULL,
-    endpoint_name character varying(126) NOT NULL,
-    provider_type character varying(32) NOT NULL,
-    provider_protocol character varying(32) NOT NULL,
-    aws_region character varying(64),
-    base_url text NOT NULL,
-    headers jsonb DEFAULT '{}'::jsonb NOT NULL,
-    endpoint_auth_mode character varying(16) DEFAULT 'BEARER'::character varying NOT NULL,
-    api_key_header character varying(32),
-    network_profile_mode character varying(24) DEFAULT 'PUBLIC_TLS'::character varying NOT NULL,
-    network_termination character varying(32) DEFAULT 'NATIVE'::character varying NOT NULL,
-    network_zone_id uuid,
-    trust_bundle_reference character varying(1024),
-    trust_bundle_sha256 character varying(64),
-    pool_idle_timeout_ms bigint DEFAULT 30000 NOT NULL,
-    client_refresh_interval_ms bigint DEFAULT 300000 NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    CONSTRAINT llm_provider_endpoint_auth_ck CHECK ((((endpoint_auth_mode)::text = ANY (ARRAY[('NONE'::character varying)::text, ('BEARER'::character varying)::text, ('API_KEY'::character varying)::text, ('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text])) AND (((endpoint_auth_mode)::text = 'API_KEY'::text) = (api_key_header IS NOT NULL)) AND ((api_key_header IS NULL) OR ((api_key_header)::text = ANY (ARRAY[('authorization'::character varying)::text, ('x-api-key'::character varying)::text]))))),
-    CONSTRAINT llm_provider_endpoint_bedrock_ck CHECK (((((provider_type)::text = 'aws_bedrock'::text) = ((provider_protocol)::text = 'bedrock_converse'::text)) AND ((((provider_type)::text = 'aws_bedrock'::text) AND ((aws_region)::text ~ '^[a-z0-9]+(-[a-z0-9]+)+-[0-9]+$'::text) AND ((endpoint_auth_mode)::text = ANY (ARRAY[('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text]))) OR (((provider_type)::text <> 'aws_bedrock'::text) AND (aws_region IS NULL) AND ((endpoint_auth_mode)::text <> ALL (ARRAY[('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text])))))),
-    CONSTRAINT llm_provider_endpoint_pool_ck CHECK (((pool_idle_timeout_ms > 0) AND (client_refresh_interval_ms >= pool_idle_timeout_ms))),
-    CONSTRAINT llm_provider_endpoint_profile_ck CHECK ((((network_profile_mode)::text = ANY (ARRAY[('PUBLIC_TLS'::character varying)::text, ('PRIVATE_TLS'::character varying)::text, ('PRIVATE_PLAINTEXT'::character varying)::text])) AND ((network_termination)::text = ANY (ARRAY[('NATIVE'::character varying)::text, ('LIGHT_GATEWAY_SIDECAR'::character varying)::text])) AND ((((network_profile_mode)::text = 'PUBLIC_TLS'::text) AND (base_url ~ '^https://'::text) AND (network_zone_id IS NULL)) OR (((network_profile_mode)::text = 'PRIVATE_TLS'::text) AND (base_url ~ '^https://'::text) AND (network_zone_id IS NOT NULL)) OR (((network_profile_mode)::text = 'PRIVATE_PLAINTEXT'::text) AND (base_url ~ '^http://'::text) AND (network_zone_id IS NOT NULL) AND ((endpoint_auth_mode)::text = 'NONE'::text))))),
-    CONSTRAINT llm_provider_endpoint_protocol_ck CHECK (((provider_protocol)::text = ANY (ARRAY[('openai_chat'::character varying)::text, ('openai_responses'::character varying)::text, ('openai_embeddings'::character varying)::text, ('anthropic_messages'::character varying)::text, ('bedrock_converse'::character varying)::text]))),
-    CONSTRAINT llm_provider_endpoint_t_aggregate_version_check CHECK ((aggregate_version > 0)),
-    CONSTRAINT llm_provider_endpoint_t_headers_check CHECK ((jsonb_typeof(headers) = 'object'::text)),
-    CONSTRAINT llm_provider_endpoint_trust_ck CHECK (((((network_profile_mode)::text = 'PRIVATE_TLS'::text) = ((trust_bundle_reference IS NOT NULL) AND (trust_bundle_sha256 IS NOT NULL))) AND ((trust_bundle_sha256 IS NULL) OR ((trust_bundle_sha256)::text ~ '^[0-9a-f]{64}$'::text))))
-);
-
-
---
--- Name: TABLE llm_provider_endpoint_t; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.llm_provider_endpoint_t IS 'Stores llm provider endpoint records used by the Portal GenAI control plane and Light Gateway runtime.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.host_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.host_id IS 'Tenant host identifier that scopes this record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.provider_endpoint_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_endpoint_id IS 'Identifier for the related provider endpoint.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.provider_account_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_account_id IS 'Identifier for the related provider account.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.endpoint_name; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.endpoint_name IS 'Endpoint Name value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.provider_type; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_type IS 'Provider Type value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.provider_protocol; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_protocol IS 'Provider Protocol value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.aws_region; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.aws_region IS 'Aws Region value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.base_url; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.base_url IS 'Base Url value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.headers; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.headers IS 'Headers value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.endpoint_auth_mode; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.endpoint_auth_mode IS 'Endpoint Auth Mode value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.api_key_header; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.api_key_header IS 'Api Key Header value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.network_profile_mode; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.network_profile_mode IS 'Network Profile Mode value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.network_termination; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.network_termination IS 'Network Termination value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.network_zone_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.network_zone_id IS 'Identifier for the related network zone.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.trust_bundle_reference; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.trust_bundle_reference IS 'Trust Bundle Reference value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.trust_bundle_sha256; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.trust_bundle_sha256 IS 'Trust Bundle Sha256 value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.pool_idle_timeout_ms; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.pool_idle_timeout_ms IS 'Pool Idle Timeout Ms value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.client_refresh_interval_ms; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.client_refresh_interval_ms IS 'Client Refresh Interval Ms value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.aggregate_version IS 'Version value for aggregate.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.active; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.active IS 'Indicates whether this record is active.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.update_ts; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.update_ts IS 'Timestamp when this record was last updated.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.update_user; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.update_user IS 'User or service principal that last updated this record.';
 
 
 --
@@ -45798,6 +45791,43 @@ COMMENT ON COLUMN public.llm_gateway_ownership_release_t.update_ts IS 'Timestamp
 COMMENT ON COLUMN public.llm_gateway_ownership_release_t.delete_user IS 'Actor responsible for soft deletion.';
 COMMENT ON COLUMN public.llm_gateway_ownership_release_t.delete_ts IS 'Timestamp of soft deletion.';
 
+
+
+
+-- Endpoint transport is shared by deployments. Keep the cross-row Bedrock
+-- contract valid for direct imports as well as command-handler writes.
+CREATE FUNCTION public.validate_llm_deployment_endpoint_policy() RETURNS trigger
+ LANGUAGE plpgsql AS $$
+DECLARE protocol text;
+BEGIN
+ IF TG_TABLE_NAME = 'llm_provider_deployment_t' THEN
+  IF NEW.active IS NOT TRUE THEN RETURN NEW; END IF;
+  SELECT provider_protocol INTO protocol FROM public.llm_provider_endpoint_t
+   WHERE host_id=NEW.host_id AND provider_endpoint_id=NEW.provider_endpoint_id FOR UPDATE;
+  IF FOUND AND ((protocol='bedrock_converse') IS DISTINCT FROM (NEW.bedrock_policy IS NOT NULL)) THEN
+   RAISE EXCEPTION 'bedrockPolicy must match the provider endpoint protocol' USING ERRCODE='23514';
+  END IF;
+ ELSE
+  IF NEW.provider_protocol IS DISTINCT FROM OLD.provider_protocol AND EXISTS (
+   SELECT 1 FROM public.llm_provider_deployment_t d
+    WHERE d.host_id=NEW.host_id AND d.provider_endpoint_id=NEW.provider_endpoint_id
+     AND d.active IS TRUE
+     AND ((NEW.provider_protocol='bedrock_converse') IS DISTINCT FROM (d.bedrock_policy IS NOT NULL))
+  ) THEN
+   RAISE EXCEPTION 'Provider endpoint protocol conflicts with deployment bedrockPolicy' USING ERRCODE='23514';
+  END IF;
+ END IF;
+ RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION public.validate_llm_deployment_endpoint_policy() IS
+ 'Validates deployment Bedrock policy against the authoritative endpoint protocol.';
+CREATE TRIGGER llm_deployment_endpoint_policy_check
+ BEFORE INSERT OR UPDATE OF provider_endpoint_id,bedrock_policy,active ON public.llm_provider_deployment_t
+ FOR EACH ROW EXECUTE FUNCTION public.validate_llm_deployment_endpoint_policy();
+CREATE TRIGGER llm_endpoint_deployment_policy_check
+ BEFORE UPDATE OF provider_protocol ON public.llm_provider_endpoint_t
+ FOR EACH ROW EXECUTE FUNCTION public.validate_llm_deployment_endpoint_policy();
 
 \unrestrict hH5RPVy0DmoyafcyXfCcG4i9sdKgsYSKTzXXVVYP7XpvO7UaT9TIlRIkHZQaYB0
 
