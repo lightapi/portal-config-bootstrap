@@ -53,18 +53,21 @@ for patch in "${patches[@]}"; do
   log "applying $patch_id"
   source_sql="$(mktemp "${TMPDIR:-/tmp}/portal-db-patch-source.XXXXXX.sql")"
   rendered_sql="$(mktemp "${TMPDIR:-/tmp}/portal-db-patch-rendered.XXXXXX.sql")"
+  # Render only the patch body so its COMMIT cannot commit ahead of tracking.
+  # Keep the original patch untouched: its checksum is deployment history.
+  PORTAL_DB_CONFIGSERVER_SOURCE="$patch" \
+    PORTAL_DB_STRIP_TOP_LEVEL_TRANSACTIONS=true \
+    "$schema_renderer" configserver configserver "$rendered_sql"
+
   {
     printf 'BEGIN;\n'
-    cat "$patch"
+    cat "$rendered_sql"
     printf '\n'
     printf "INSERT INTO portal_schema_patch_t (patch_id, checksum) VALUES ('%s', '%s');\n" "$patch_id" "$checksum"
     printf 'COMMIT;\n'
   } > "$source_sql"
 
-  PORTAL_DB_CONFIGSERVER_SOURCE="$source_sql" \
-    "$schema_renderer" configserver configserver "$rendered_sql"
-
-  if ! "${psql[@]}" < "$rendered_sql"; then
+  if ! "${psql[@]}" < "$source_sql"; then
     rm -f "$source_sql" "$rendered_sql"
     die "failed to apply $patch_id"
   fi
