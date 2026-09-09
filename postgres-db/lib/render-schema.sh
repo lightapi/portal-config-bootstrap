@@ -106,6 +106,7 @@ render() {
     -e "/^[[:space:]]*\\(parent_schema\\|child_schema\\)[[:space:]]/s/DEFAULT 'public'/DEFAULT '${schema_name}'/g" \
     -e "s/\\(\\(parent_schema\\|child_schema\\)[[:space:]]*=[[:space:]]*\\)'public'/\\1'${schema_name}'/g" \
     -e "/^[[:space:]]*('public',/s/'public'/'${schema_name}'/g" \
+    -e "s/^SET search_path = public;$/SET search_path = ${schema_name}, public;/g" \
     -e "s/SELECT pg_catalog.set_config('search_path', '', false);/SET search_path = ${schema_name}, public;/g" \
     -e "s/ON SCHEMA public/ON SCHEMA ${schema_name}/g" \
     -e "s/Name: SCHEMA public/Name: SCHEMA ${schema_name}/g" \
