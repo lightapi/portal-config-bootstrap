@@ -5,7 +5,7 @@ CREATE DATABASE configserver;
 -- PostgreSQL database dump
 --
 
-\restrict hH5RPVy0DmoyafcyXfCcG4i9sdKgsYSKTzXXVVYP7XpvO7UaT9TIlRIkHZQaYB0
+\restrict 5E8R5bpWf8E8G0qhQuemxc32BZgpsRV9zjzvWexyr57OayUayhORA3i6NVhiWbh
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg12+1)
 -- Dumped by pg_dump version 17.10 (Debian 17.10-1.pgdg12+1)
@@ -757,6 +757,73 @@ BEGIN
         PERFORM pg_notify('workflow_task_ready_v1',
             json_build_object('hostId',NEW.host_id,'taskId',NEW.task_id,
                               'executionClass',NEW.execution_class)::text);
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: operational_store_decommission_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.operational_store_decommission_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE enforce_hold boolean := false;
+BEGIN
+    IF NEW.operation_kind='DECOMMISSION' AND TG_OP='INSERT' THEN
+        enforce_hold := true;
+    ELSIF NEW.operation_kind='DECOMMISSION'
+          AND (OLD.operation_kind IS DISTINCT FROM NEW.operation_kind
+               OR OLD.binding_id IS DISTINCT FROM NEW.binding_id) THEN
+        enforce_hold := true;
+    END IF;
+    IF enforce_hold AND EXISTS (
+        SELECT 1 FROM public.operational_store_binding_t
+        WHERE binding_id=NEW.binding_id AND retention_hold
+    ) THEN
+        RAISE EXCEPTION 'retention hold blocks operational-store decommission';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: operational_store_legacy_write_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.operational_store_legacy_write_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RAISE EXCEPTION 'version-1 operational-store provisioning is read-only';
+END
+$$;
+
+
+--
+-- Name: operational_store_publication_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.operational_store_publication_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE binding_state varchar(32); binding_published boolean; binding_host uuid;
+        binding_environment varchar(32); binding_contract bigint;
+BEGIN
+    IF NEW.publication_state = 'ACTIVE' THEN
+        SELECT lifecycle_state,published,host_id,environment,contract_version
+          INTO binding_state,binding_published,binding_host,binding_environment,binding_contract
+          FROM public.operational_store_binding_t WHERE binding_id=NEW.binding_id;
+        IF binding_published IS DISTINCT FROM true OR binding_host IS DISTINCT FROM NEW.host_id
+           OR (binding_contract=1 AND (binding_state IS DISTINCT FROM 'READY'
+               OR binding_environment IS DISTINCT FROM NEW.environment))
+           OR (binding_contract=2 AND (binding_state IS DISTINCT FROM 'REGISTERED'
+               OR NEW.environment IS NOT NULL)) THEN
+            RAISE EXCEPTION 'only an exact published operational-store binding may publish';
+        END IF;
     END IF;
     RETURN NEW;
 END
@@ -1720,6 +1787,44 @@ END $$;
 
 
 --
+-- Name: validate_llm_deployment_endpoint_policy(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.validate_llm_deployment_endpoint_policy() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE protocol text;
+BEGIN
+ IF TG_TABLE_NAME = 'llm_provider_deployment_t' THEN
+  IF NEW.active IS NOT TRUE THEN RETURN NEW; END IF;
+  SELECT provider_protocol INTO protocol FROM public.llm_provider_endpoint_t
+   WHERE host_id=NEW.host_id AND provider_endpoint_id=NEW.provider_endpoint_id FOR UPDATE;
+  IF FOUND AND ((protocol='bedrock_converse') IS DISTINCT FROM (NEW.bedrock_policy IS NOT NULL)) THEN
+   RAISE EXCEPTION 'bedrockPolicy must match the provider endpoint protocol' USING ERRCODE='23514';
+  END IF;
+ ELSE
+  IF NEW.provider_protocol IS DISTINCT FROM OLD.provider_protocol AND EXISTS (
+   SELECT 1 FROM public.llm_provider_deployment_t d
+    WHERE d.host_id=NEW.host_id AND d.provider_endpoint_id=NEW.provider_endpoint_id
+     AND d.active IS TRUE
+     AND ((NEW.provider_protocol='bedrock_converse') IS DISTINCT FROM (d.bedrock_policy IS NOT NULL))
+  ) THEN
+   RAISE EXCEPTION 'Provider endpoint protocol conflicts with deployment bedrockPolicy' USING ERRCODE='23514';
+  END IF;
+ END IF;
+ RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION validate_llm_deployment_endpoint_policy(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.validate_llm_deployment_endpoint_policy() IS 'Validates deployment Bedrock policy against the authoritative endpoint protocol.';
+
+
+--
 -- Name: validate_runner_request_policy_snapshot_v1(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -2059,6 +2164,2404 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
+-- Name: a2a_artifact_retention_profile_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.a2a_artifact_retention_profile_t (
+    host_id uuid NOT NULL,
+    retention_profile_id uuid NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    task_retention_days integer NOT NULL,
+    artifact_retention_days integer NOT NULL,
+    maximum_artifact_bytes bigint NOT NULL,
+    access_policy_ref character varying(256) NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_artifact_retention_bounds_ck CHECK ((((task_retention_days >= 1) AND (task_retention_days <= 3650)) AND ((artifact_retention_days >= 1) AND (artifact_retention_days <= 3650)) AND ((maximum_artifact_bytes >= 1) AND (maximum_artifact_bytes <= '1099511627776'::bigint)))),
+    CONSTRAINT a2a_artifact_retention_policy_ck CHECK ((length(btrim((access_policy_ref)::text)) > 0)),
+    CONSTRAINT a2a_artifact_retention_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE a2a_artifact_retention_profile_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.a2a_artifact_retention_profile_t IS 'Host-scoped A2A task and artifact retention policy linked to existing fine-grained access policy.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.retention_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.retention_profile_id IS 'Identifier of the retention profile associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.profile_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.profile_name IS 'Human-readable name of the reusable profile.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.task_retention_days; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.task_retention_days IS 'Number of days to retain completed task records.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.artifact_retention_days; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.artifact_retention_days IS 'Number of days to retain published artifacts.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.maximum_artifact_bytes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.maximum_artifact_bytes IS 'Maximum allowed artifact size in bytes.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.access_policy_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.access_policy_ref IS 'Reference to the policy governing retained-artifact access.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN a2a_artifact_retention_profile_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_artifact_retention_profile_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: a2a_backend_transport_profile_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.a2a_backend_transport_profile_t (
+    host_id uuid NOT NULL,
+    backend_transport_profile_id uuid NOT NULL,
+    environment character varying(32) NOT NULL,
+    profile_name character varying(128) NOT NULL,
+    contract_version character varying(64) NOT NULL,
+    contract_digest character varying(71) NOT NULL,
+    loopback_origin character varying(256) NOT NULL,
+    audience character varying(256) NOT NULL,
+    context_key_file character varying(512) NOT NULL,
+    data_boundary_digest character varying(71) NOT NULL,
+    request_timeout_ms bigint NOT NULL,
+    maximum_request_bytes bigint NOT NULL,
+    maximum_response_bytes bigint NOT NULL,
+    capabilities jsonb NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_backend_transport_profile_boundary_ck CHECK (((data_boundary_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT a2a_backend_transport_profile_capabilities_ck CHECK (((jsonb_typeof(capabilities) = 'object'::text) AND (capabilities ?& ARRAY['contractVersion'::text, 'streaming'::text, 'cancellation'::text, 'statusReconciliation'::text, 'acceptedContentModes'::text, 'maximumArtifactBytes'::text]) AND ((capabilities - ARRAY['contractVersion'::text, 'streaming'::text, 'cancellation'::text, 'statusReconciliation'::text, 'acceptedContentModes'::text, 'maximumArtifactBytes'::text]) = '{}'::jsonb) AND ((capabilities ->> 'contractVersion'::text) = 'light-a2a-backend/v1'::text) AND (jsonb_typeof((capabilities -> 'streaming'::text)) = 'boolean'::text) AND (jsonb_typeof((capabilities -> 'cancellation'::text)) = 'boolean'::text) AND (jsonb_typeof((capabilities -> 'statusReconciliation'::text)) = 'boolean'::text) AND (jsonb_typeof((capabilities -> 'acceptedContentModes'::text)) = 'array'::text) AND ((jsonb_array_length((capabilities -> 'acceptedContentModes'::text)) >= 1) AND (jsonb_array_length((capabilities -> 'acceptedContentModes'::text)) <= 16)) AND (jsonb_typeof((capabilities -> 'maximumArtifactBytes'::text)) = 'number'::text) AND ((((capabilities ->> 'maximumArtifactBytes'::text))::numeric >= (1)::numeric) AND (((capabilities ->> 'maximumArtifactBytes'::text))::numeric <= ('1099511627776'::bigint)::numeric)))),
+    CONSTRAINT a2a_backend_transport_profile_contract_ck CHECK ((((contract_version)::text = 'light-a2a-backend/v1'::text) AND ((contract_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text))),
+    CONSTRAINT a2a_backend_transport_profile_key_ck CHECK ((((context_key_file)::text ~ '^/run/secrets/[A-Za-z0-9._-]+$'::text) AND ((context_key_file)::text !~ '(^|/)\.\.(/|$)'::text))),
+    CONSTRAINT a2a_backend_transport_profile_limit_ck CHECK ((((request_timeout_ms >= 100) AND (request_timeout_ms <= 300000)) AND ((maximum_request_bytes >= 1) AND (maximum_request_bytes <= 16777216)) AND ((maximum_response_bytes >= 1) AND (maximum_response_bytes <= 67108864)))),
+    CONSTRAINT a2a_backend_transport_profile_origin_ck CHECK ((((loopback_origin)::text ~ '^http://(127\.0\.0\.1|localhost|\[::1\]):[1-9][0-9]{0,4}/$'::text) AND ((("substring"((loopback_origin)::text, ':([0-9]{1,5})/$'::text))::integer >= 1) AND (("substring"((loopback_origin)::text, ':([0-9]{1,5})/$'::text))::integer <= 65535)))),
+    CONSTRAINT a2a_backend_transport_profile_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE a2a_backend_transport_profile_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.a2a_backend_transport_profile_t IS 'Portal-authored fixed-loopback light-a2a-backend/v1 transport profile; contains references and limits but no secret material.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.backend_transport_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.backend_transport_profile_id IS 'Identifier of the backend transport profile associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.environment IS 'Logical deployment environment within the owning host.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.profile_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.profile_name IS 'Human-readable name of the reusable profile.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.contract_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.contract_version IS 'Version of the runtime contract implemented by the profile or binding.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.contract_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.contract_digest IS 'Digest identifying the approved runtime contract.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.loopback_origin; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.loopback_origin IS 'Approved fixed loopback origin for the external backend.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.audience; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.audience IS 'Intended runtime recipient of this profile or publication.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.context_key_file; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.context_key_file IS 'Mounted context signing key file reference; never secret key material.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.data_boundary_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.data_boundary_digest IS 'Digest of the approved backend data boundary.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.request_timeout_ms; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.request_timeout_ms IS 'Maximum duration of a backend request in milliseconds.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.maximum_request_bytes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.maximum_request_bytes IS 'Maximum accepted request body size in bytes.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.maximum_response_bytes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.maximum_response_bytes IS 'Maximum accepted response body size in bytes.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.capabilities; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.capabilities IS 'Declared backend capabilities validated against the transport contract.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN a2a_backend_transport_profile_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_backend_transport_profile_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: a2a_callback_registration_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.a2a_callback_registration_t (
+    host_id uuid NOT NULL,
+    callback_registration_id uuid NOT NULL,
+    push_profile_id uuid NOT NULL,
+    registration_name character varying(126) NOT NULL,
+    callback_url character varying(2048) NOT NULL,
+    owner_principal_prefixes jsonb NOT NULL,
+    hmac_key_file character varying(1024) NOT NULL,
+    registration_state character varying(16) NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_callback_registration_key_ck CHECK ((((hmac_key_file)::text ~ '^/[^[:space:]]+$'::text) AND ((hmac_key_file)::text !~* '(password=|secret=|-----BEGIN)'::text))),
+    CONSTRAINT a2a_callback_registration_owner_ck CHECK (((jsonb_typeof(owner_principal_prefixes) = 'array'::text) AND (jsonb_array_length(owner_principal_prefixes) > 0))),
+    CONSTRAINT a2a_callback_registration_state_ck CHECK (((registration_state)::text = ANY ((ARRAY['APPROVED'::character varying, 'DISABLED'::character varying])::text[]))),
+    CONSTRAINT a2a_callback_registration_url_ck CHECK (((callback_url)::text ~ '^https://[^[:space:]?#]+(/[^[:space:]?#]*)?$'::text)),
+    CONSTRAINT a2a_callback_registration_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE a2a_callback_registration_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.a2a_callback_registration_t IS 'Approved callback destination and server-owned HMAC key-file reference; callers cannot add destinations.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.callback_registration_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.callback_registration_id IS 'Identifier of the callback registration associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.push_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.push_profile_id IS 'Identifier of the push profile associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.registration_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.registration_name IS 'Human-readable name of the callback registration.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.callback_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.callback_url IS 'Registered destination URL for push callbacks.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.owner_principal_prefixes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.owner_principal_prefixes IS 'Principal prefixes permitted to own this callback registration.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.hmac_key_file; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.hmac_key_file IS 'Mounted HMAC key file reference used to authenticate callbacks.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.registration_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.registration_state IS 'Lifecycle state controlling use of the callback registration.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN a2a_callback_registration_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_callback_registration_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: a2a_extended_card_profile_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.a2a_extended_card_profile_t (
+    host_id uuid NOT NULL,
+    extended_card_profile_id uuid NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    authorization_policy_digest character varying(71) NOT NULL,
+    allowed_principal_prefixes jsonb NOT NULL,
+    card_document jsonb NOT NULL,
+    profile_state character varying(16) NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_extended_card_profile_card_ck CHECK ((jsonb_typeof(card_document) = 'object'::text)),
+    CONSTRAINT a2a_extended_card_profile_policy_ck CHECK (((authorization_policy_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT a2a_extended_card_profile_principals_ck CHECK (((jsonb_typeof(allowed_principal_prefixes) = 'array'::text) AND (jsonb_array_length(allowed_principal_prefixes) > 0))),
+    CONSTRAINT a2a_extended_card_profile_state_ck CHECK (((profile_state)::text = ANY ((ARRAY['APPROVED'::character varying, 'DISABLED'::character varying])::text[]))),
+    CONSTRAINT a2a_extended_card_profile_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE a2a_extended_card_profile_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.a2a_extended_card_profile_t IS 'Independently authorized and signed extended Agent Card disclosure profile.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.extended_card_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.extended_card_profile_id IS 'Identifier of the extended card profile associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.profile_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.profile_name IS 'Human-readable name of the reusable profile.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.authorization_policy_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.authorization_policy_digest IS 'Digest of the authorization policy governing extended-card access.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.allowed_principal_prefixes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.allowed_principal_prefixes IS 'Principal prefixes permitted to request the extended card.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.card_document; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.card_document IS 'Approved extended Agent Card JSON document.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.profile_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.profile_state IS 'Lifecycle state controlling whether the profile can be published.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN a2a_extended_card_profile_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extended_card_profile_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: a2a_extension_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.a2a_extension_t (
+    host_id uuid NOT NULL,
+    extension_id uuid NOT NULL,
+    extension_uri character varying(1024) NOT NULL,
+    extension_version character varying(64) NOT NULL,
+    description character varying(2000),
+    schema_document jsonb DEFAULT '{}'::jsonb NOT NULL,
+    dependency_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    activation_state character varying(16) DEFAULT 'DRAFT'::character varying NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_extension_dependencies_ck CHECK ((jsonb_typeof(dependency_ids) = 'array'::text)),
+    CONSTRAINT a2a_extension_initial_state_ck CHECK (((activation_state)::text = ANY ((ARRAY['DRAFT'::character varying, 'OPTIONAL_DATA'::character varying, 'DISABLED'::character varying])::text[]))),
+    CONSTRAINT a2a_extension_schema_ck CHECK ((jsonb_typeof(schema_document) = 'object'::text)),
+    CONSTRAINT a2a_extension_uri_ck CHECK (((extension_uri)::text ~ '^https://'::text)),
+    CONSTRAINT a2a_extension_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE a2a_extension_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.a2a_extension_t IS 'Managed A2A extension registry; Phase 6 permits only reviewed OPTIONAL_DATA activation.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.extension_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.extension_id IS 'Identifier of the extension associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.extension_uri; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.extension_uri IS 'Canonical URI identifying the A2A extension.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.extension_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.extension_version IS 'Version of the advertised A2A extension.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.description; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.description IS 'Human-readable description of this authoring record.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.schema_document; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.schema_document IS 'JSON schema defining the extension payload.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.dependency_ids; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.dependency_ids IS 'Extension identifiers required before this extension can be activated.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.activation_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.activation_state IS 'Lifecycle state controlling extension activation.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN a2a_extension_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_extension_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: a2a_provider_profile_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.a2a_provider_profile_t (
+    host_id uuid NOT NULL,
+    provider_profile_id uuid NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    provider_name character varying(126) NOT NULL,
+    provider_url character varying(1024),
+    documentation_url character varying(1024),
+    icon_url character varying(1024),
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_provider_profile_urls_ck CHECK ((((provider_url IS NULL) OR ((provider_url)::text ~ '^https://'::text)) AND ((documentation_url IS NULL) OR ((documentation_url)::text ~ '^https://'::text)) AND ((icon_url IS NULL) OR ((icon_url)::text ~ '^https://'::text)))),
+    CONSTRAINT a2a_provider_profile_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE a2a_provider_profile_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.a2a_provider_profile_t IS 'Reusable Portal-authored public provider identity for Agent Cards.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.provider_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.provider_profile_id IS 'Identifier of the provider profile associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.profile_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.profile_name IS 'Human-readable name of the reusable profile.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.provider_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.provider_name IS 'Provider name presented in published Agent Cards.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.provider_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.provider_url IS 'Provider website URL presented in Agent Cards.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.documentation_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.documentation_url IS 'URL of documentation presented with this record.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.icon_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.icon_url IS 'URL of the published provider or agent icon.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN a2a_provider_profile_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_provider_profile_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: a2a_push_profile_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.a2a_push_profile_t (
+    host_id uuid NOT NULL,
+    push_profile_id uuid NOT NULL,
+    environment character varying(32) NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    maximum_attempts bigint NOT NULL,
+    initial_backoff_seconds bigint NOT NULL,
+    maximum_backoff_seconds bigint NOT NULL,
+    lease_seconds bigint NOT NULL,
+    request_timeout_ms bigint NOT NULL,
+    profile_state character varying(16) NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_push_profile_bounds_ck CHECK ((((maximum_attempts >= 1) AND (maximum_attempts <= 100)) AND ((initial_backoff_seconds >= 1) AND (initial_backoff_seconds <= 86400)) AND ((maximum_backoff_seconds >= initial_backoff_seconds) AND (maximum_backoff_seconds <= 86400)) AND ((lease_seconds >= 1) AND (lease_seconds <= 300)) AND ((request_timeout_ms >= 1) AND (request_timeout_ms <= 300000)) AND ((request_timeout_ms + 5000) <= (lease_seconds * 1000)))),
+    CONSTRAINT a2a_push_profile_state_ck CHECK (((profile_state)::text = ANY ((ARRAY['APPROVED'::character varying, 'DISABLED'::character varying])::text[]))),
+    CONSTRAINT a2a_push_profile_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE a2a_push_profile_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.a2a_push_profile_t IS 'Bounded retry and lease policy for governed A2A push delivery.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.push_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.push_profile_id IS 'Identifier of the push profile associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.environment IS 'Logical deployment environment within the owning host.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.profile_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.profile_name IS 'Human-readable name of the reusable profile.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.maximum_attempts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.maximum_attempts IS 'Maximum callback delivery attempts before terminal failure.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.initial_backoff_seconds; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.initial_backoff_seconds IS 'Initial callback retry delay in seconds.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.maximum_backoff_seconds; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.maximum_backoff_seconds IS 'Upper bound for callback retry delays in seconds.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.lease_seconds; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.lease_seconds IS 'Duration of the callback worker lease in seconds.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.request_timeout_ms; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.request_timeout_ms IS 'Maximum duration of a backend request in milliseconds.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.profile_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.profile_state IS 'Lifecycle state controlling whether the profile can be published.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN a2a_push_profile_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_push_profile_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: a2a_signing_key_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.a2a_signing_key_t (
+    host_id uuid NOT NULL,
+    signing_profile_id uuid NOT NULL,
+    kid character varying(256) NOT NULL,
+    public_jwk jsonb NOT NULL,
+    private_key_ref character varying(1024) NOT NULL,
+    key_state character varying(16) NOT NULL,
+    valid_from timestamp with time zone NOT NULL,
+    valid_until timestamp with time zone,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_signing_key_private_ref_ck CHECK (((private_key_ref)::text ~ '^managed:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'::text)),
+    CONSTRAINT a2a_signing_key_public_ck CHECK (((jsonb_typeof(public_jwk) = 'object'::text) AND ((public_jwk ->> 'kid'::text) = (kid)::text) AND ((public_jwk ->> 'kty'::text) = 'RSA'::text) AND ((public_jwk ->> 'alg'::text) = 'RS256'::text) AND (length(COALESCE((public_jwk ->> 'n'::text), ''::text)) > 0) AND (length(COALESCE((public_jwk ->> 'e'::text), ''::text)) > 0))),
+    CONSTRAINT a2a_signing_key_state_ck CHECK (((key_state)::text = ANY ((ARRAY['CURRENT'::character varying, 'PREVIOUS'::character varying, 'REVOKED'::character varying])::text[]))),
+    CONSTRAINT a2a_signing_key_validity_ck CHECK (((valid_until IS NULL) OR (valid_until > valid_from))),
+    CONSTRAINT a2a_signing_key_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE a2a_signing_key_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.a2a_signing_key_t IS 'Public key lifecycle and private-key provider reference for an A2A signing profile.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.signing_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.signing_profile_id IS 'Identifier of the signing profile associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.kid; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.kid IS 'Public key identifier included in signed payload headers.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.public_jwk; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.public_jwk IS 'Public verification key as a JSON Web Key.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.private_key_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.private_key_ref IS 'Reference to private signing material; never the private key itself.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.key_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.key_state IS 'Lifecycle state controlling signing and verification eligibility.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.valid_from; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.valid_from IS 'Timestamp from which the publication or key is valid.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.valid_until; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.valid_until IS 'Timestamp after which the key must no longer be used.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN a2a_signing_key_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_key_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: a2a_signing_profile_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.a2a_signing_profile_t (
+    host_id uuid NOT NULL,
+    signing_profile_id uuid NOT NULL,
+    environment character varying(32) NOT NULL,
+    profile_name character varying(126) NOT NULL,
+    purpose character varying(32) NOT NULL,
+    algorithm character varying(16) NOT NULL,
+    jwks_url character varying(1024) NOT NULL,
+    managed_key_alias character varying(512) NOT NULL,
+    rotation_policy jsonb DEFAULT '{}'::jsonb NOT NULL,
+    revocation_epoch bigint DEFAULT 0 NOT NULL,
+    is_default boolean DEFAULT false NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT a2a_signing_profile_algorithm_ck CHECK (((algorithm)::text = 'RS256'::text)),
+    CONSTRAINT a2a_signing_profile_alias_ck CHECK (((length(btrim((managed_key_alias)::text)) > 0) AND ((managed_key_alias)::text !~* '(private.?key|password|secret=|-----BEGIN)'::text))),
+    CONSTRAINT a2a_signing_profile_jwks_ck CHECK (((jwks_url)::text ~ '^https://'::text)),
+    CONSTRAINT a2a_signing_profile_purpose_ck CHECK (((purpose)::text = ANY ((ARRAY['A2A_CARD_NATIVE'::character varying, 'A2A_CARD_EXTERNAL_FACADE'::character varying])::text[]))),
+    CONSTRAINT a2a_signing_profile_rotation_ck CHECK ((jsonb_typeof(rotation_policy) = 'object'::text)),
+    CONSTRAINT a2a_signing_profile_version_ck CHECK (((revocation_epoch >= 0) AND (aggregate_version > 0)))
+);
+
+
+--
+-- Name: TABLE a2a_signing_profile_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.a2a_signing_profile_t IS 'Purpose-separated A2A Agent Card issuer identity; OAuth token keys are never eligible.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.signing_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.signing_profile_id IS 'Identifier of the signing profile associated with this record.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.environment IS 'Logical deployment environment within the owning host.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.profile_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.profile_name IS 'Human-readable name of the reusable profile.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.purpose; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.purpose IS 'Intended signing purpose of this profile.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.algorithm; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.algorithm IS 'Approved cryptographic signing algorithm.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.jwks_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.jwks_url IS 'URL exposing the public verification key set.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.managed_key_alias; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.managed_key_alias IS 'Alias resolving to signing material in the configured key provider.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.rotation_policy; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.rotation_policy IS 'Policy controlling signing-key rotation.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.revocation_epoch; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.revocation_epoch IS 'Monotonic revocation counter used to invalidate older publications.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.is_default; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.is_default IS 'Whether this is the default signing profile for its scope.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN a2a_signing_profile_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.a2a_signing_profile_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: access_target_col_filter_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.access_target_col_filter_t (
+    host_id uuid NOT NULL,
+    access_target_id uuid NOT NULL,
+    filter_id uuid NOT NULL,
+    principal_type character varying(16) NOT NULL,
+    principal_id character varying(255) NOT NULL,
+    principal_value character varying(1024) DEFAULT ''::character varying NOT NULL,
+    columns text NOT NULL,
+    aggregate_version bigint NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT access_target_col_filter_t_columns_check CHECK ((length(TRIM(BOTH FROM columns)) > 0)),
+    CONSTRAINT access_target_col_filter_t_principal_type_check CHECK (((principal_type)::text = ANY (ARRAY['ROLE'::text, 'GROUP'::text, 'POSITION'::text, 'ATTRIBUTE'::text, 'USER'::text])))
+);
+
+
+--
+-- Name: TABLE access_target_col_filter_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.access_target_col_filter_t IS 'Principal-specific response column filters for a generic access target.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.host_id IS 'Tenant host identifier.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.access_target_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.access_target_id IS 'Related generic access target.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.filter_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.filter_id IS 'Stable column-filter identifier.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.principal_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.principal_type IS 'Principal kind selecting this filter.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.principal_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.principal_id IS 'Principal or attribute identifier.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.principal_value; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.principal_value IS 'Attribute value or empty value for other principal kinds.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.columns; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.columns IS 'Space-delimited response columns retained by the filter.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.aggregate_version IS 'Accepted publication version.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.active IS 'Whether this column filter is active.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.update_user IS 'Principal that last updated this filter.';
+
+
+--
+-- Name: COLUMN access_target_col_filter_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_col_filter_t.update_ts IS 'Time this filter was last updated.';
+
+
+--
+-- Name: access_target_permission_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.access_target_permission_t (
+    host_id uuid NOT NULL,
+    access_target_id uuid NOT NULL,
+    principal_type character varying(16) NOT NULL,
+    principal_id character varying(255) NOT NULL,
+    principal_value character varying(1024) DEFAULT ''::character varying NOT NULL,
+    start_ts timestamp with time zone,
+    end_ts timestamp with time zone,
+    aggregate_version bigint NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT access_target_permission_t_check CHECK (((end_ts IS NULL) OR (start_ts IS NULL) OR (end_ts > start_ts))),
+    CONSTRAINT access_target_permission_t_principal_type_check CHECK (((principal_type)::text = ANY (ARRAY['ROLE'::text, 'GROUP'::text, 'POSITION'::text, 'ATTRIBUTE'::text, 'USER'::text])))
+);
+
+
+--
+-- Name: TABLE access_target_permission_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.access_target_permission_t IS 'Principal permissions for a generic access target.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.host_id IS 'Tenant host identifier.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.access_target_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.access_target_id IS 'Related generic access target.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.principal_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.principal_type IS 'Role, group, position, attribute, or user principal kind.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.principal_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.principal_id IS 'Principal or attribute identifier.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.principal_value; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.principal_value IS 'Attribute value or empty value for non-attribute principals.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.start_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.start_ts IS 'Optional beginning of user permission validity.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.end_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.end_ts IS 'Optional end of user permission validity.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.aggregate_version IS 'Accepted publication version.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.active IS 'Whether this permission is active.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.update_user IS 'Principal that last updated this permission.';
+
+
+--
+-- Name: COLUMN access_target_permission_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_permission_t.update_ts IS 'Time this permission was last updated.';
+
+
+--
+-- Name: access_target_row_filter_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.access_target_row_filter_t (
+    host_id uuid NOT NULL,
+    access_target_id uuid NOT NULL,
+    filter_id uuid NOT NULL,
+    principal_type character varying(16) NOT NULL,
+    principal_id character varying(255) NOT NULL,
+    principal_value character varying(1024) DEFAULT ''::character varying NOT NULL,
+    col_name character varying(255) NOT NULL,
+    operator character varying(32) NOT NULL,
+    col_value character varying(1024) NOT NULL,
+    aggregate_version bigint NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT access_target_row_filter_t_operator_check CHECK (((operator)::text = ANY (ARRAY['='::text, '!='::text, '<'::text, '>'::text, '<='::text, '>='::text, 'in'::text, 'not in'::text, 'range'::text]))),
+    CONSTRAINT access_target_row_filter_t_principal_type_check CHECK (((principal_type)::text = ANY (ARRAY['ROLE'::text, 'GROUP'::text, 'POSITION'::text, 'ATTRIBUTE'::text, 'USER'::text])))
+);
+
+
+--
+-- Name: TABLE access_target_row_filter_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.access_target_row_filter_t IS 'Principal-specific response row filters for a generic access target.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.host_id IS 'Tenant host identifier.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.access_target_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.access_target_id IS 'Related generic access target.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.filter_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.filter_id IS 'Stable row-filter identifier.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.principal_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.principal_type IS 'Principal kind selecting this filter.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.principal_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.principal_id IS 'Principal or attribute identifier.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.principal_value; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.principal_value IS 'Attribute value or empty value for other principal kinds.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.col_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.col_name IS 'Response column evaluated by the filter.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.operator; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.operator IS 'Bounded row-filter comparison operator.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.col_value; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.col_value IS 'Comparison value.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.aggregate_version IS 'Accepted publication version.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.active IS 'Whether this row filter is active.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.update_user IS 'Principal that last updated this filter.';
+
+
+--
+-- Name: COLUMN access_target_row_filter_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_row_filter_t.update_ts IS 'Time this filter was last updated.';
+
+
+--
+-- Name: access_target_rule_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.access_target_rule_t (
+    host_id uuid NOT NULL,
+    access_target_id uuid NOT NULL,
+    rule_id character varying(255) NOT NULL,
+    rule_type character varying(32) NOT NULL,
+    aggregate_version bigint NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT access_target_rule_t_rule_type_check CHECK (((rule_type)::text = ANY (ARRAY['req-acc'::text, 'res-fil'::text])))
+);
+
+
+--
+-- Name: TABLE access_target_rule_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.access_target_rule_t IS 'Rule assignments for a generic access target.';
+
+
+--
+-- Name: COLUMN access_target_rule_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_rule_t.host_id IS 'Tenant host identifier.';
+
+
+--
+-- Name: COLUMN access_target_rule_t.access_target_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_rule_t.access_target_id IS 'Related generic access target.';
+
+
+--
+-- Name: COLUMN access_target_rule_t.rule_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_rule_t.rule_id IS 'Assigned rule identifier.';
+
+
+--
+-- Name: COLUMN access_target_rule_t.rule_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_rule_t.rule_type IS 'Gateway rule stage such as req-acc or res-fil.';
+
+
+--
+-- Name: COLUMN access_target_rule_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_rule_t.aggregate_version IS 'Accepted publication version.';
+
+
+--
+-- Name: COLUMN access_target_rule_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_rule_t.active IS 'Whether this rule assignment is active.';
+
+
+--
+-- Name: COLUMN access_target_rule_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_rule_t.update_user IS 'Principal that last updated this assignment.';
+
+
+--
+-- Name: COLUMN access_target_rule_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_rule_t.update_ts IS 'Time this assignment was last updated.';
+
+
+--
+-- Name: access_target_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.access_target_t (
+    host_id uuid NOT NULL,
+    access_target_id uuid NOT NULL,
+    instance_id uuid,
+    target_type character varying(32) NOT NULL,
+    target_id uuid NOT NULL,
+    endpoint_key character varying(1024),
+    source_version bigint NOT NULL,
+    access_mode character varying(16) DEFAULT 'PROTECTED'::character varying NOT NULL,
+    response_target character varying(1024),
+    public_approval_reason character varying(1024),
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    delete_user character varying(255),
+    delete_ts timestamp with time zone,
+    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT access_target_t_access_mode_check CHECK (((access_mode)::text = ANY (ARRAY['PROTECTED'::text, 'PUBLIC'::text]))),
+    CONSTRAINT access_target_t_aggregate_version_check CHECK ((aggregate_version > 0)),
+    CONSTRAINT access_target_t_check CHECK ((((access_mode)::text <> 'PUBLIC'::text) OR (length(TRIM(BOTH FROM COALESCE(public_approval_reason, ''::character varying))) > 0))),
+    CONSTRAINT access_target_t_response_target_check CHECK (((response_target IS NULL) OR ((length((response_target)::text) <= 1024) AND (((response_target)::text = ''::text) OR ((response_target)::text ~~ '/%'::text))))),
+    CONSTRAINT access_target_t_source_version_check CHECK ((source_version > 0)),
+    CONSTRAINT access_target_t_target_type_check CHECK (((target_type)::text = ANY (ARRAY['API_ENDPOINT'::text, 'TOOL'::text])))
+);
+
+
+--
+-- Name: TABLE access_target_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.access_target_t IS 'Generic Portal-managed authorization target for an API endpoint or instance-scoped MCP Tool.';
+
+
+--
+-- Name: COLUMN access_target_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.host_id IS 'Tenant host identifier.';
+
+
+--
+-- Name: COLUMN access_target_t.access_target_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.access_target_id IS 'Stable access target identifier.';
+
+
+--
+-- Name: COLUMN access_target_t.instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.instance_id IS 'Gateway instance for Tool targets; null for catalog-level API endpoint targets.';
+
+
+--
+-- Name: COLUMN access_target_t.target_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.target_type IS 'Target kind: API_ENDPOINT or TOOL.';
+
+
+--
+-- Name: COLUMN access_target_t.target_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.target_id IS 'Identifier of the API endpoint or Tool.';
+
+
+--
+-- Name: COLUMN access_target_t.endpoint_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.endpoint_key IS 'Exact compiled gateway access-control lookup key.';
+
+
+--
+-- Name: COLUMN access_target_t.source_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.source_version IS 'Accepted source aggregate version.';
+
+
+--
+-- Name: COLUMN access_target_t.access_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.access_mode IS 'Protected or explicitly approved public access mode.';
+
+
+--
+-- Name: COLUMN access_target_t.response_target; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.response_target IS 'Optional bounded JSON Pointer selecting a nested response-filter target.';
+
+
+--
+-- Name: COLUMN access_target_t.public_approval_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.public_approval_reason IS 'Required operator reason for PUBLIC access.';
+
+
+--
+-- Name: COLUMN access_target_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.aggregate_version IS 'Optimistic concurrency version.';
+
+
+--
+-- Name: COLUMN access_target_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.active IS 'Whether this target projection is active.';
+
+
+--
+-- Name: COLUMN access_target_t.delete_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.delete_user IS 'Principal that deactivated this target.';
+
+
+--
+-- Name: COLUMN access_target_t.delete_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.delete_ts IS 'Time this target was deactivated.';
+
+
+--
+-- Name: COLUMN access_target_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.update_user IS 'Principal that last updated this target.';
+
+
+--
+-- Name: COLUMN access_target_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.access_target_t.update_ts IS 'Time this target was last updated.';
+
+
+--
+-- Name: agent_a2a_binding_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agent_a2a_binding_t (
+    host_id uuid NOT NULL,
+    a2a_binding_id uuid NOT NULL,
+    agent_def_id uuid NOT NULL,
+    instance_api_id uuid NOT NULL,
+    environment character varying(32) NOT NULL,
+    agent_ref character varying(256) NOT NULL,
+    binding_name character varying(126) NOT NULL,
+    implementation_kind character varying(32) NOT NULL,
+    deployment_mode character varying(16) NOT NULL,
+    public_path character varying(512) NOT NULL,
+    runtime_service_id character varying(256) NOT NULL,
+    runtime_instance_id uuid NOT NULL,
+    inbound_enabled boolean DEFAULT true NOT NULL,
+    outbound_enabled boolean DEFAULT false NOT NULL,
+    profile_config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    access_policy jsonb DEFAULT '{}'::jsonb NOT NULL,
+    backend_config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    policy_digest character varying(71) NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    public_metadata_id uuid,
+    retention_profile_id uuid,
+    signing_profile_id uuid,
+    allowed_hosts jsonb NOT NULL,
+    retention_override jsonb DEFAULT '{}'::jsonb NOT NULL,
+    extension_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
+    extended_card_profile_id uuid,
+    push_profile_id uuid,
+    backend_transport_profile_id uuid,
+    CONSTRAINT agent_a2a_binding_access_ck CHECK ((jsonb_typeof(access_policy) = 'object'::text)),
+    CONSTRAINT agent_a2a_binding_allowed_hosts_ck CHECK (((jsonb_typeof(allowed_hosts) = 'array'::text) AND ((jsonb_array_length(allowed_hosts) >= 1) AND (jsonb_array_length(allowed_hosts) <= 32)))),
+    CONSTRAINT agent_a2a_binding_backend_ck CHECK ((jsonb_typeof(backend_config) = 'object'::text)),
+    CONSTRAINT agent_a2a_binding_backend_transport_ck CHECK (((((implementation_kind)::text = 'EXTERNAL_SIDECAR'::text) AND (backend_transport_profile_id IS NOT NULL)) OR (((implementation_kind)::text <> 'EXTERNAL_SIDECAR'::text) AND (backend_transport_profile_id IS NULL)))),
+    CONSTRAINT agent_a2a_binding_environment_ck CHECK ((length(btrim((environment)::text)) > 0)),
+    CONSTRAINT agent_a2a_binding_extensions_ck CHECK (((jsonb_typeof(extension_ids) = 'array'::text) AND (jsonb_array_length(extension_ids) <= 8))),
+    CONSTRAINT agent_a2a_binding_implementation_ck CHECK (((implementation_kind)::text = ANY ((ARRAY['LIGHT_AGENT'::character varying, 'EXTERNAL_SIDECAR'::character varying, 'REMOTE_A2A'::character varying])::text[]))),
+    CONSTRAINT agent_a2a_binding_mode_ck CHECK (((deployment_mode)::text = ANY ((ARRAY['NATIVE'::character varying, 'SIDECAR'::character varying, 'SHARED'::character varying])::text[]))),
+    CONSTRAINT agent_a2a_binding_mode_kind_ck CHECK (((((implementation_kind)::text = 'LIGHT_AGENT'::text) AND ((deployment_mode)::text = 'NATIVE'::text)) OR (((implementation_kind)::text <> 'LIGHT_AGENT'::text) AND ((deployment_mode)::text = ANY ((ARRAY['SIDECAR'::character varying, 'SHARED'::character varying])::text[]))))),
+    CONSTRAINT agent_a2a_binding_path_ck CHECK (((public_path)::text ~ '^/[^?#]*$'::text)),
+    CONSTRAINT agent_a2a_binding_policy_digest_ck CHECK (((policy_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT agent_a2a_binding_profile_ck CHECK ((jsonb_typeof(profile_config) = 'object'::text)),
+    CONSTRAINT agent_a2a_binding_ref_ck CHECK (((agent_ref)::text ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'::text)),
+    CONSTRAINT agent_a2a_binding_retention_override_ck CHECK ((jsonb_typeof(retention_override) = 'object'::text)),
+    CONSTRAINT agent_a2a_binding_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE agent_a2a_binding_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agent_a2a_binding_t IS 'Structured, editable A2A binding authoring state; never runtime request-path authority.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.a2a_binding_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.a2a_binding_id IS 'Identifier of the a2a binding associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.agent_def_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.agent_def_id IS 'Identifier of the agent def associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.instance_api_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.instance_api_id IS 'Identifier of the instance api associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.environment IS 'Logical deployment environment within the owning host.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.agent_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.agent_ref IS 'Stable public agent reference within the environment.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.binding_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.binding_name IS 'Human-readable name of the agent binding.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.implementation_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.implementation_kind IS 'Runtime implementation category for the bound agent.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.deployment_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.deployment_mode IS 'Native, sidecar, or shared runtime deployment mode.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.public_path; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.public_path IS 'Public HTTP path exposing the agent.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.runtime_service_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.runtime_service_id IS 'Identifier of the runtime service associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.runtime_instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.runtime_instance_id IS 'Identifier of the runtime instance associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.inbound_enabled; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.inbound_enabled IS 'Whether inbound A2A requests are enabled.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.outbound_enabled; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.outbound_enabled IS 'Whether outbound A2A requests are enabled.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.profile_config; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.profile_config IS 'Provider-specific configuration for the selected profile.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.access_policy; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.access_policy IS 'Authorization policy attached to the binding.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.backend_config; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.backend_config IS 'Configuration for invoking the bound backend.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.policy_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.policy_digest IS 'Digest of the policy captured for this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.public_metadata_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.public_metadata_id IS 'Identifier of the public metadata associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.retention_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.retention_profile_id IS 'Identifier of the retention profile associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.signing_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.signing_profile_id IS 'Identifier of the signing profile associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.allowed_hosts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.allowed_hosts IS 'Approved public host names for the binding.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.retention_override; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.retention_override IS 'Binding-specific overrides to the referenced retention profile.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.extension_ids; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.extension_ids IS 'A2A extensions enabled for the binding.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.extended_card_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.extended_card_profile_id IS 'Identifier of the extended card profile associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.push_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.push_profile_id IS 'Identifier of the push profile associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_binding_t.backend_transport_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_binding_t.backend_transport_profile_id IS 'Identifier of the backend transport profile associated with this record.';
+
+
+--
+-- Name: agent_a2a_instance_publication_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agent_a2a_instance_publication_t (
+    host_id uuid NOT NULL,
+    instance_publication_id uuid NOT NULL,
+    publication_id uuid NOT NULL,
+    runtime_instance_id uuid NOT NULL,
+    audience character varying(32) NOT NULL,
+    property_set_digest character varying(71) NOT NULL,
+    config_snapshot_id uuid,
+    application_version bigint NOT NULL,
+    application_state character varying(16) NOT NULL,
+    acknowledged_digest character varying(71),
+    acknowledged_ts timestamp with time zone,
+    rollback_of_instance_publication_id uuid,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT agent_a2a_instance_publication_ack_digest_ck CHECK (((acknowledged_digest IS NULL) OR ((acknowledged_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text))),
+    CONSTRAINT agent_a2a_instance_publication_audience_ck CHECK (((audience)::text = ANY ((ARRAY['light-gateway'::character varying, 'light-agent'::character varying, 'light-a2a'::character varying, 'light-workflow'::character varying])::text[]))),
+    CONSTRAINT agent_a2a_instance_publication_digest_ck CHECK (((property_set_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT agent_a2a_instance_publication_state_ck CHECK (((application_state)::text = ANY ((ARRAY['STAGED'::character varying, 'ACTIVE'::character varying, 'ACKNOWLEDGED'::character varying, 'REJECTED'::character varying, 'ROLLED_BACK'::character varying, 'REVOKED'::character varying])::text[]))),
+    CONSTRAINT agent_a2a_instance_publication_version_ck CHECK (((application_version > 0) AND (aggregate_version > 0)))
+);
+
+
+--
+-- Name: TABLE agent_a2a_instance_publication_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agent_a2a_instance_publication_t IS 'Application, acknowledgement, and rollback evidence for one runtime audience.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.instance_publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.instance_publication_id IS 'Identifier of the instance publication associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.publication_id IS 'Identifier of the publication associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.runtime_instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.runtime_instance_id IS 'Identifier of the runtime instance associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.audience; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.audience IS 'Intended runtime recipient of this profile or publication.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.property_set_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.property_set_digest IS 'Digest of the generated instance property set.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.config_snapshot_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.config_snapshot_id IS 'Identifier of the config snapshot associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.application_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.application_version IS 'Version of the runtime application targeted by this publication.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.application_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.application_state IS 'Observed state of applying the publication to its instance.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.acknowledged_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.acknowledged_digest IS 'Content digest acknowledged by the runtime instance.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.acknowledged_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.acknowledged_ts IS 'Timestamp when the instance acknowledged the publication.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.rollback_of_instance_publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.rollback_of_instance_publication_id IS 'Identifier of the rollback of instance publication associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN agent_a2a_instance_publication_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_instance_publication_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: agent_a2a_public_metadata_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agent_a2a_public_metadata_t (
+    host_id uuid NOT NULL,
+    public_metadata_id uuid NOT NULL,
+    agent_def_id uuid NOT NULL,
+    provider_profile_id uuid,
+    display_name character varying(126),
+    description character varying(2000),
+    documentation_url character varying(1024),
+    icon_url character varying(1024),
+    semantic_version character varying(64),
+    source_provenance jsonb DEFAULT '{}'::jsonb NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT agent_a2a_public_metadata_sources_ck CHECK ((jsonb_typeof(source_provenance) = 'object'::text)),
+    CONSTRAINT agent_a2a_public_metadata_urls_ck CHECK ((((documentation_url IS NULL) OR ((documentation_url)::text ~ '^https://'::text)) AND ((icon_url IS NULL) OR ((icon_url)::text ~ '^https://'::text)))),
+    CONSTRAINT agent_a2a_public_metadata_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE agent_a2a_public_metadata_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agent_a2a_public_metadata_t IS 'Version-scoped Agent Card metadata overrides with source provenance.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.public_metadata_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.public_metadata_id IS 'Identifier of the public metadata associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.agent_def_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.agent_def_id IS 'Identifier of the agent def associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.provider_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.provider_profile_id IS 'Identifier of the provider profile associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.display_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.display_name IS 'Human-readable agent name presented in its Agent Card.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.description; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.description IS 'Human-readable description of this authoring record.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.documentation_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.documentation_url IS 'URL of documentation presented with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.icon_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.icon_url IS 'URL of the published provider or agent icon.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.semantic_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.semantic_version IS 'Published semantic version of the agent metadata.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.source_provenance; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.source_provenance IS 'Provenance of the source used to author the metadata.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN agent_a2a_public_metadata_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_public_metadata_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: agent_a2a_publication_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agent_a2a_publication_t (
+    host_id uuid NOT NULL,
+    publication_id uuid NOT NULL,
+    a2a_binding_id uuid NOT NULL,
+    publication_version bigint NOT NULL,
+    publication_state character varying(16) NOT NULL,
+    content_digest character varying(71) NOT NULL,
+    policy_digest character varying(71) NOT NULL,
+    manifest jsonb NOT NULL,
+    runtime_projections jsonb NOT NULL,
+    validation_result jsonb NOT NULL,
+    signed_agent_card jsonb,
+    valid_from timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revocation_epoch bigint DEFAULT 0 NOT NULL,
+    source_aggregate_versions jsonb NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT agent_a2a_publication_card_ck CHECK (((signed_agent_card IS NULL) OR (jsonb_typeof(signed_agent_card) = 'object'::text))),
+    CONSTRAINT agent_a2a_publication_content_digest_ck CHECK (((content_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT agent_a2a_publication_manifest_ck CHECK ((jsonb_typeof(manifest) = 'object'::text)),
+    CONSTRAINT agent_a2a_publication_policy_digest_ck CHECK (((policy_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT agent_a2a_publication_projection_ck CHECK ((jsonb_typeof(runtime_projections) = 'object'::text)),
+    CONSTRAINT agent_a2a_publication_revocation_ck CHECK ((revocation_epoch >= 0)),
+    CONSTRAINT agent_a2a_publication_sources_ck CHECK ((jsonb_typeof(source_aggregate_versions) = 'object'::text)),
+    CONSTRAINT agent_a2a_publication_state_ck CHECK (((publication_state)::text = ANY ((ARRAY['PREPARED'::character varying, 'STAGED'::character varying, 'ACTIVE'::character varying, 'REVOKED'::character varying, 'EXPIRED'::character varying, 'REJECTED'::character varying])::text[]))),
+    CONSTRAINT agent_a2a_publication_validation_ck CHECK ((jsonb_typeof(validation_result) = 'object'::text)),
+    CONSTRAINT agent_a2a_publication_validity_ck CHECK ((expires_at > valid_from)),
+    CONSTRAINT agent_a2a_publication_version_ck CHECK (((publication_version > 0) AND (aggregate_version > 0)))
+);
+
+
+--
+-- Name: TABLE agent_a2a_publication_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agent_a2a_publication_t IS 'Immutable digest-bound A2A publication and audience-specific Config Server projections.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.publication_id IS 'Identifier of the publication associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.a2a_binding_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.a2a_binding_id IS 'Identifier of the a2a binding associated with this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.publication_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.publication_version IS 'Monotonic version of the A2A publication.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.publication_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.publication_state IS 'Lifecycle state of this immutable publication.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.content_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.content_digest IS 'Digest of the immutable published content.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.policy_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.policy_digest IS 'Digest of the policy captured for this record.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.manifest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.manifest IS 'Immutable validated publication manifest.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.runtime_projections; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.runtime_projections IS 'Audience-specific runtime configurations compiled from the manifest.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.validation_result; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.validation_result IS 'Validation evidence recorded when the publication was built.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.signed_agent_card; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.signed_agent_card IS 'Signed Agent Card distributed with the publication.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.valid_from; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.valid_from IS 'Timestamp from which the publication or key is valid.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.expires_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.expires_at IS 'Publication expiration timestamp.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.revocation_epoch; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.revocation_epoch IS 'Monotonic revocation counter used to invalidate older publications.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.source_aggregate_versions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.source_aggregate_versions IS 'Source aggregate versions used to build the publication.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN agent_a2a_publication_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_a2a_publication_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
 -- Name: agent_action_attempt_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2206,6 +4709,13 @@ COMMENT ON COLUMN public.agent_action_attempt_t.approval_id IS 'Identifier for t
 --
 
 COMMENT ON COLUMN public.agent_action_attempt_t.execution_attempt_id IS 'Identifier for the related execution attempt.';
+
+
+--
+-- Name: COLUMN agent_action_attempt_t.execution_reference_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_action_attempt_t.execution_reference_digest IS 'Digest of the authenticated execution reference accepted by Agent reconciliation.';
 
 
 --
@@ -2430,6 +4940,13 @@ COMMENT ON COLUMN public.agent_approval_t.consumed_action_attempt_id IS 'Identif
 --
 
 COMMENT ON COLUMN public.agent_approval_t.consumed_execution_attempt_id IS 'Identifier for the related consumed execution attempt.';
+
+
+--
+-- Name: COLUMN agent_approval_t.consumed_execution_reference_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_approval_t.consumed_execution_reference_digest IS 'Digest of signed evidence binding approval consumption to an execution.';
 
 
 --
@@ -3397,6 +5914,129 @@ COMMENT ON COLUMN public.agent_edge_runner_binding_t.action_policies IS 'Action 
 
 
 --
+-- Name: agent_execution_outbox_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agent_execution_outbox_t (
+    host_id uuid NOT NULL,
+    dispatch_id uuid NOT NULL,
+    request_id uuid NOT NULL,
+    command_kind character varying(16) NOT NULL,
+    command_payload jsonb NOT NULL,
+    payload_digest character varying(71) NOT NULL,
+    state character varying(16) DEFAULT 'PENDING'::character varying NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    next_attempt_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_error character varying(512),
+    dispatched_ts timestamp with time zone,
+    created_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT agent_execution_outbox_t_command_check CHECK (((command_kind)::text = ANY (ARRAY['REQUEST'::text, 'CLEANUP'::text]))),
+    CONSTRAINT agent_execution_outbox_t_digest_check CHECK (((payload_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT agent_execution_outbox_t_payload_check CHECK ((jsonb_typeof(command_payload) = 'object'::text)),
+    CONSTRAINT agent_execution_outbox_t_state_check CHECK (((state)::text = ANY (ARRAY['PENDING'::text, 'DISPATCHED'::text, 'DEAD'::text])))
+);
+
+
+--
+-- Name: TABLE agent_execution_outbox_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agent_execution_outbox_t IS 'Agent-owned durable handoff to the Controller execution API; Config Server execution tables are not authoritative.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.dispatch_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.dispatch_id IS 'Identifier of the dispatch associated with this record.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.request_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.request_id IS 'Identifier of the request associated with this record.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.command_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.command_kind IS 'Type of Controller execution command awaiting dispatch.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.command_payload; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.command_payload IS 'Durable command payload to send to the Controller.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.payload_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.payload_digest IS 'Digest used to verify the durable command payload.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.state IS 'Current dispatch lifecycle state.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.attempt_count; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.attempt_count IS 'Number of dispatch or reconciliation attempts already made.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.next_attempt_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.next_attempt_ts IS 'Earliest timestamp when another attempt may run.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.last_error; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.last_error IS 'Most recent redacted dispatch error.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.dispatched_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.dispatched_ts IS 'Timestamp when dispatch succeeded.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.created_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.created_ts IS 'Timestamp when the record was created.';
+
+
+--
+-- Name: COLUMN agent_execution_outbox_t.updated_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_execution_outbox_t.updated_ts IS 'Timestamp when dispatch state last changed.';
+
+
+--
 -- Name: agent_fixed_action_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3940,6 +6580,27 @@ COMMENT ON COLUMN public.agent_memory_bank_t.user_id IS 'Identifier for the rela
 
 
 --
+-- Name: COLUMN agent_memory_bank_t.agent_definition_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_bank_t.agent_definition_version IS 'Agent definition version accepted when the bank was created.';
+
+
+--
+-- Name: COLUMN agent_memory_bank_t.agent_definition_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_bank_t.agent_definition_digest IS 'Agent definition digest accepted when the bank was created.';
+
+
+--
+-- Name: COLUMN agent_memory_bank_t.user_identity_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_bank_t.user_identity_digest IS 'Digest of the authenticated user identity accepted for the bank.';
+
+
+--
 -- Name: COLUMN agent_memory_bank_t.bank_name; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -4008,10 +6669,10 @@ CREATE TABLE public.agent_memory_directive_t (
     active boolean DEFAULT true,
     update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
     update_user character varying(126) DEFAULT SESSION_USER,
-    CONSTRAINT agent_memory_directive_definition_version_ck CHECK (agent_definition_version > 0),
-    CONSTRAINT agent_memory_directive_bank_profile_ck CHECK (length(btrim(bank_profile)) > 0),
-    CONSTRAINT agent_memory_directive_scope_selector_ck CHECK (jsonb_typeof(scope_selector) = 'object'),
-    CONSTRAINT agent_memory_directive_policy_digest_ck CHECK (policy_digest ~ '^sha256:[0-9a-f]{64}$')
+    CONSTRAINT agent_memory_directive_bank_profile_ck CHECK ((length(btrim((bank_profile)::text)) > 0)),
+    CONSTRAINT agent_memory_directive_definition_version_ck CHECK ((agent_definition_version > 0)),
+    CONSTRAINT agent_memory_directive_policy_digest_ck CHECK (((policy_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT agent_memory_directive_scope_selector_ck CHECK ((jsonb_typeof(scope_selector) = 'object'::text))
 );
 
 
@@ -4034,6 +6695,48 @@ COMMENT ON COLUMN public.agent_memory_directive_t.host_id IS 'Tenant host identi
 --
 
 COMMENT ON COLUMN public.agent_memory_directive_t.directive_id IS 'Identifier for the related directive.';
+
+
+--
+-- Name: COLUMN agent_memory_directive_t.agent_def_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_directive_t.agent_def_id IS 'Agent definition targeted by an immutable hard directive.';
+
+
+--
+-- Name: COLUMN agent_memory_directive_t.agent_definition_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_directive_t.agent_definition_version IS 'Agent definition version targeted by an immutable hard directive.';
+
+
+--
+-- Name: COLUMN agent_memory_directive_t.bank_profile; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_directive_t.bank_profile IS 'Published bank profile selector, independent of a concrete runtime bank.';
+
+
+--
+-- Name: COLUMN agent_memory_directive_t.scope_selector; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_directive_t.scope_selector IS 'Published Host, user, or session scope selector for the directive.';
+
+
+--
+-- Name: COLUMN agent_memory_directive_t.policy_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_directive_t.policy_digest IS 'Digest binding the hard directive to the Agent policy publication.';
+
+
+--
+-- Name: COLUMN agent_memory_directive_t.publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_directive_t.publication_id IS 'Agent publication carrying the hard directive.';
 
 
 --
@@ -4321,6 +7024,13 @@ COMMENT ON COLUMN public.agent_memory_entity_t.bank_id IS 'Identifier for the re
 --
 
 COMMENT ON COLUMN public.agent_memory_entity_t.user_id IS 'Identifier for the related user.';
+
+
+--
+-- Name: COLUMN agent_memory_entity_t.user_identity_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_memory_entity_t.user_identity_digest IS 'Digest of the authenticated user identity accepted for the entity.';
 
 
 --
@@ -4931,6 +7641,27 @@ COMMENT ON COLUMN public.agent_policy_snapshot_t.agent_def_id IS 'Identifier for
 
 
 --
+-- Name: COLUMN agent_policy_snapshot_t.agent_definition_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_policy_snapshot_t.agent_definition_version IS 'Pinned Agent definition version represented by this evidence snapshot.';
+
+
+--
+-- Name: COLUMN agent_policy_snapshot_t.agent_publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_policy_snapshot_t.agent_publication_id IS 'Pinned Agent publication represented by this evidence snapshot.';
+
+
+--
+-- Name: COLUMN agent_policy_snapshot_t.agent_content_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_policy_snapshot_t.agent_content_digest IS 'Digest of the accepted complete Agent publication.';
+
+
+--
 -- Name: COLUMN agent_policy_snapshot_t.definition_digest; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -5380,6 +8111,20 @@ COMMENT ON COLUMN public.agent_quota_usage_t.quota_id IS 'Identifier for the rel
 --
 
 COMMENT ON COLUMN public.agent_quota_usage_t.window_start_ts IS 'Timestamp for the window start event or state.';
+
+
+--
+-- Name: COLUMN agent_quota_usage_t.quota_policy_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_quota_usage_t.quota_policy_version IS 'Pinned quota-policy version used for this accounting window.';
+
+
+--
+-- Name: COLUMN agent_quota_usage_t.quota_policy_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_quota_usage_t.quota_policy_digest IS 'Pinned quota-policy digest used for this accounting window.';
 
 
 --
@@ -6036,6 +8781,62 @@ COMMENT ON COLUMN public.agent_session_t.service_pool_id IS 'Identifier for the 
 --
 
 COMMENT ON COLUMN public.agent_session_t.service_pool_compatibility_digest IS 'Integrity digest for service pool compatibility.';
+
+
+--
+-- Name: COLUMN agent_session_t.service_pool_maximum_concurrency; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_session_t.service_pool_maximum_concurrency IS 'Pinned service-pool capacity used only with operational occupancy rows.';
+
+
+--
+-- Name: COLUMN agent_session_t.agent_publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_session_t.agent_publication_id IS 'Pinned Agent publication accepted at session admission.';
+
+
+--
+-- Name: COLUMN agent_session_t.agent_content_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_session_t.agent_content_digest IS 'Digest of the complete Agent publication accepted at session admission.';
+
+
+--
+-- Name: COLUMN agent_session_t.agent_definition_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_session_t.agent_definition_digest IS 'Pinned Agent definition digest accepted at session admission.';
+
+
+--
+-- Name: COLUMN agent_session_t.user_identity_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_session_t.user_identity_digest IS 'Digest of the authenticated user identity accepted at session admission.';
+
+
+--
+-- Name: COLUMN agent_session_t.model_provider; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_session_t.model_provider IS 'Pinned model provider accepted at session admission.';
+
+
+--
+-- Name: COLUMN agent_session_t.model_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_session_t.model_name IS 'Pinned model alias accepted at session admission.';
+
+
+--
+-- Name: COLUMN agent_session_t.execution_session_reference_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_session_t.execution_session_reference_digest IS 'Digest of the authenticated execution-session reference.';
 
 
 --
@@ -6767,6 +9568,20 @@ COMMENT ON COLUMN public.agent_turn_t.execution_attempt_id IS 'Identifier for th
 
 
 --
+-- Name: COLUMN agent_turn_t.scheduling_request_reference_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_turn_t.scheduling_request_reference_digest IS 'Digest of the authenticated scheduling-request reference.';
+
+
+--
+-- Name: COLUMN agent_turn_t.execution_reference_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agent_turn_t.execution_reference_digest IS 'Digest of the authenticated execution-attempt reference.';
+
+
+--
 -- Name: COLUMN agent_turn_t.materialization_manifest_digest; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -6983,164 +9798,6 @@ COMMENT ON COLUMN public.api_endpoint_scope_t.update_ts IS 'Timestamp when this 
 
 
 --
--- Name: access_target_t; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.access_target_t (
-    host_id uuid NOT NULL,
-    access_target_id uuid NOT NULL,
-    instance_id uuid,
-    target_type character varying(32) NOT NULL,
-    target_id uuid NOT NULL,
-    endpoint_key character varying(1024),
-    source_version bigint NOT NULL,
-    access_mode character varying(16) DEFAULT 'PROTECTED'::character varying NOT NULL,
-    response_target character varying(1024),
-    public_approval_reason character varying(1024),
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    delete_user character varying(255),
-    delete_ts timestamp with time zone,
-    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    PRIMARY KEY (host_id, access_target_id),
-    UNIQUE (host_id, instance_id, target_type, target_id),
-    CHECK (target_type::text = ANY (ARRAY['API_ENDPOINT'::text, 'TOOL'::text])),
-    CHECK (access_mode::text = ANY (ARRAY['PROTECTED'::text, 'PUBLIC'::text])),
-    CHECK (source_version > 0),
-    CHECK (aggregate_version > 0),
-    CHECK (response_target IS NULL OR length(response_target) <= 1024 AND (response_target = '' OR response_target LIKE '/%')),
-    CHECK (access_mode <> 'PUBLIC' OR length(trim(COALESCE(public_approval_reason, ''))) > 0)
-);
-
-CREATE UNIQUE INDEX access_target_endpoint_key_uk ON public.access_target_t
-    USING btree (host_id, instance_id, endpoint_key)
-    WHERE active AND instance_id IS NOT NULL AND endpoint_key IS NOT NULL;
-
-CREATE UNIQUE INDEX access_target_api_identity_uk ON public.access_target_t
-    USING btree (host_id, target_type, target_id)
-    WHERE target_type::text = 'API_ENDPOINT'::text AND instance_id IS NULL;
-
-CREATE TABLE public.access_target_rule_t (
-    host_id uuid NOT NULL, access_target_id uuid NOT NULL, rule_id character varying(255) NOT NULL,
-    rule_type character varying(32) NOT NULL, aggregate_version bigint NOT NULL,
-    active boolean DEFAULT true NOT NULL, update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    PRIMARY KEY (host_id, access_target_id, rule_id),
-    FOREIGN KEY (host_id, access_target_id) REFERENCES public.access_target_t(host_id, access_target_id),
-    CHECK (rule_type::text = ANY (ARRAY['req-acc'::text, 'res-fil'::text]))
-);
-
-CREATE TABLE public.access_target_permission_t (
-    host_id uuid NOT NULL, access_target_id uuid NOT NULL,
-    principal_type character varying(16) NOT NULL, principal_id character varying(255) NOT NULL,
-    principal_value character varying(1024) DEFAULT ''::character varying NOT NULL,
-    start_ts timestamp with time zone, end_ts timestamp with time zone,
-    aggregate_version bigint NOT NULL, active boolean DEFAULT true NOT NULL,
-    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    PRIMARY KEY (host_id, access_target_id, principal_type, principal_id, principal_value),
-    FOREIGN KEY (host_id, access_target_id) REFERENCES public.access_target_t(host_id, access_target_id),
-    CHECK (principal_type::text = ANY (ARRAY['ROLE'::text, 'GROUP'::text, 'POSITION'::text, 'ATTRIBUTE'::text, 'USER'::text])),
-    CHECK (end_ts IS NULL OR start_ts IS NULL OR end_ts > start_ts)
-);
-
-CREATE TABLE public.access_target_row_filter_t (
-    host_id uuid NOT NULL, access_target_id uuid NOT NULL, filter_id uuid NOT NULL,
-    principal_type character varying(16) NOT NULL, principal_id character varying(255) NOT NULL,
-    principal_value character varying(1024) DEFAULT ''::character varying NOT NULL,
-    col_name character varying(255) NOT NULL, operator character varying(32) NOT NULL,
-    col_value character varying(1024) NOT NULL, aggregate_version bigint NOT NULL,
-    active boolean DEFAULT true NOT NULL, update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    PRIMARY KEY (host_id, access_target_id, filter_id),
-    FOREIGN KEY (host_id, access_target_id) REFERENCES public.access_target_t(host_id, access_target_id),
-    CHECK (principal_type::text = ANY (ARRAY['ROLE'::text, 'GROUP'::text, 'POSITION'::text, 'ATTRIBUTE'::text, 'USER'::text])),
-    CHECK (operator::text = ANY (ARRAY['='::text, '!='::text, '<'::text, '>'::text, '<='::text, '>='::text, 'in'::text, 'not in'::text, 'range'::text]))
-);
-
-CREATE TABLE public.access_target_col_filter_t (
-    host_id uuid NOT NULL, access_target_id uuid NOT NULL, filter_id uuid NOT NULL,
-    principal_type character varying(16) NOT NULL, principal_id character varying(255) NOT NULL,
-    principal_value character varying(1024) DEFAULT ''::character varying NOT NULL,
-    columns text NOT NULL, aggregate_version bigint NOT NULL, active boolean DEFAULT true NOT NULL,
-    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    PRIMARY KEY (host_id, access_target_id, filter_id),
-    FOREIGN KEY (host_id, access_target_id) REFERENCES public.access_target_t(host_id, access_target_id),
-    CHECK (principal_type::text = ANY (ARRAY['ROLE'::text, 'GROUP'::text, 'POSITION'::text, 'ATTRIBUTE'::text, 'USER'::text])),
-    CHECK (length(trim(columns)) > 0)
-);
-
-COMMENT ON TABLE public.access_target_t IS 'Generic Portal-managed authorization target for an API endpoint or instance-scoped MCP Tool.';
-COMMENT ON COLUMN public.access_target_t.host_id IS 'Tenant host identifier.';
-COMMENT ON COLUMN public.access_target_t.access_target_id IS 'Stable access target identifier.';
-COMMENT ON COLUMN public.access_target_t.instance_id IS 'Gateway instance for Tool targets; null for catalog-level API endpoint targets.';
-COMMENT ON COLUMN public.access_target_t.target_type IS 'Target kind: API_ENDPOINT or TOOL.';
-COMMENT ON COLUMN public.access_target_t.target_id IS 'Identifier of the API endpoint or Tool.';
-COMMENT ON COLUMN public.access_target_t.endpoint_key IS 'Exact compiled gateway access-control lookup key.';
-COMMENT ON COLUMN public.access_target_t.source_version IS 'Accepted source aggregate version.';
-COMMENT ON COLUMN public.access_target_t.access_mode IS 'Protected or explicitly approved public access mode.';
-COMMENT ON COLUMN public.access_target_t.response_target IS 'Optional bounded JSON Pointer selecting a nested response-filter target.';
-COMMENT ON COLUMN public.access_target_t.public_approval_reason IS 'Required operator reason for PUBLIC access.';
-COMMENT ON COLUMN public.access_target_t.aggregate_version IS 'Optimistic concurrency version.';
-COMMENT ON COLUMN public.access_target_t.active IS 'Whether this target projection is active.';
-COMMENT ON COLUMN public.access_target_t.delete_user IS 'Principal that deactivated this target.';
-COMMENT ON COLUMN public.access_target_t.delete_ts IS 'Time this target was deactivated.';
-COMMENT ON COLUMN public.access_target_t.update_user IS 'Principal that last updated this target.';
-COMMENT ON COLUMN public.access_target_t.update_ts IS 'Time this target was last updated.';
-
-COMMENT ON TABLE public.access_target_rule_t IS 'Rule assignments for a generic access target.';
-COMMENT ON COLUMN public.access_target_rule_t.host_id IS 'Tenant host identifier.';
-COMMENT ON COLUMN public.access_target_rule_t.access_target_id IS 'Related generic access target.';
-COMMENT ON COLUMN public.access_target_rule_t.rule_id IS 'Assigned rule identifier.';
-COMMENT ON COLUMN public.access_target_rule_t.rule_type IS 'Gateway rule stage such as req-acc or res-fil.';
-COMMENT ON COLUMN public.access_target_rule_t.aggregate_version IS 'Accepted publication version.';
-COMMENT ON COLUMN public.access_target_rule_t.active IS 'Whether this rule assignment is active.';
-COMMENT ON COLUMN public.access_target_rule_t.update_user IS 'Principal that last updated this assignment.';
-COMMENT ON COLUMN public.access_target_rule_t.update_ts IS 'Time this assignment was last updated.';
-
-COMMENT ON TABLE public.access_target_permission_t IS 'Principal permissions for a generic access target.';
-COMMENT ON COLUMN public.access_target_permission_t.host_id IS 'Tenant host identifier.';
-COMMENT ON COLUMN public.access_target_permission_t.access_target_id IS 'Related generic access target.';
-COMMENT ON COLUMN public.access_target_permission_t.principal_type IS 'Role, group, position, attribute, or user principal kind.';
-COMMENT ON COLUMN public.access_target_permission_t.principal_id IS 'Principal or attribute identifier.';
-COMMENT ON COLUMN public.access_target_permission_t.principal_value IS 'Attribute value or empty value for non-attribute principals.';
-COMMENT ON COLUMN public.access_target_permission_t.start_ts IS 'Optional beginning of user permission validity.';
-COMMENT ON COLUMN public.access_target_permission_t.end_ts IS 'Optional end of user permission validity.';
-COMMENT ON COLUMN public.access_target_permission_t.aggregate_version IS 'Accepted publication version.';
-COMMENT ON COLUMN public.access_target_permission_t.active IS 'Whether this permission is active.';
-COMMENT ON COLUMN public.access_target_permission_t.update_user IS 'Principal that last updated this permission.';
-COMMENT ON COLUMN public.access_target_permission_t.update_ts IS 'Time this permission was last updated.';
-
-COMMENT ON TABLE public.access_target_row_filter_t IS 'Principal-specific response row filters for a generic access target.';
-COMMENT ON COLUMN public.access_target_row_filter_t.host_id IS 'Tenant host identifier.';
-COMMENT ON COLUMN public.access_target_row_filter_t.access_target_id IS 'Related generic access target.';
-COMMENT ON COLUMN public.access_target_row_filter_t.filter_id IS 'Stable row-filter identifier.';
-COMMENT ON COLUMN public.access_target_row_filter_t.principal_type IS 'Principal kind selecting this filter.';
-COMMENT ON COLUMN public.access_target_row_filter_t.principal_id IS 'Principal or attribute identifier.';
-COMMENT ON COLUMN public.access_target_row_filter_t.principal_value IS 'Attribute value or empty value for other principal kinds.';
-COMMENT ON COLUMN public.access_target_row_filter_t.col_name IS 'Response column evaluated by the filter.';
-COMMENT ON COLUMN public.access_target_row_filter_t.operator IS 'Bounded row-filter comparison operator.';
-COMMENT ON COLUMN public.access_target_row_filter_t.col_value IS 'Comparison value.';
-COMMENT ON COLUMN public.access_target_row_filter_t.aggregate_version IS 'Accepted publication version.';
-COMMENT ON COLUMN public.access_target_row_filter_t.active IS 'Whether this row filter is active.';
-COMMENT ON COLUMN public.access_target_row_filter_t.update_user IS 'Principal that last updated this filter.';
-COMMENT ON COLUMN public.access_target_row_filter_t.update_ts IS 'Time this filter was last updated.';
-
-COMMENT ON TABLE public.access_target_col_filter_t IS 'Principal-specific response column filters for a generic access target.';
-COMMENT ON COLUMN public.access_target_col_filter_t.host_id IS 'Tenant host identifier.';
-COMMENT ON COLUMN public.access_target_col_filter_t.access_target_id IS 'Related generic access target.';
-COMMENT ON COLUMN public.access_target_col_filter_t.filter_id IS 'Stable column-filter identifier.';
-COMMENT ON COLUMN public.access_target_col_filter_t.principal_type IS 'Principal kind selecting this filter.';
-COMMENT ON COLUMN public.access_target_col_filter_t.principal_id IS 'Principal or attribute identifier.';
-COMMENT ON COLUMN public.access_target_col_filter_t.principal_value IS 'Attribute value or empty value for other principal kinds.';
-COMMENT ON COLUMN public.access_target_col_filter_t.columns IS 'Space-delimited response columns retained by the filter.';
-COMMENT ON COLUMN public.access_target_col_filter_t.aggregate_version IS 'Accepted publication version.';
-COMMENT ON COLUMN public.access_target_col_filter_t.active IS 'Whether this column filter is active.';
-COMMENT ON COLUMN public.access_target_col_filter_t.update_user IS 'Principal that last updated this filter.';
-COMMENT ON COLUMN public.access_target_col_filter_t.update_ts IS 'Time this filter was last updated.';
-
 -- Name: api_endpoint_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -10282,6 +12939,82 @@ COMMENT ON COLUMN public.auth_session_t.update_user IS 'User or service principa
 --
 
 COMMENT ON COLUMN public.auth_session_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: bundle_import_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.bundle_import_t (
+    bundle_id uuid NOT NULL,
+    bundle_mode character varying(32) NOT NULL,
+    identity_digest character varying(71) NOT NULL,
+    required_baseline_bundle_id uuid,
+    import_status character varying(16) DEFAULT 'IN_PROGRESS'::character varying NOT NULL,
+    started_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    completed_ts timestamp with time zone,
+    CONSTRAINT bundle_import_baseline_ck CHECK (((((bundle_mode)::text = ANY (ARRAY[('environment'::character varying)::text, ('standalone-host'::character varying)::text])) AND (required_baseline_bundle_id IS NULL)) OR (((bundle_mode)::text = 'host-delta'::text) AND (required_baseline_bundle_id IS NOT NULL)))),
+    CONSTRAINT bundle_import_completion_ck CHECK ((((import_status)::text = 'COMPLETE'::text) = (completed_ts IS NOT NULL))),
+    CONSTRAINT bundle_import_digest_ck CHECK (((identity_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT bundle_import_mode_ck CHECK (((bundle_mode)::text = ANY (ARRAY[('environment'::character varying)::text, ('host-delta'::character varying)::text, ('standalone-host'::character varying)::text]))),
+    CONSTRAINT bundle_import_status_ck CHECK (((import_status)::text = ANY (ARRAY[('IN_PROGRESS'::character varying)::text, ('COMPLETE'::character varying)::text])))
+);
+
+
+--
+-- Name: TABLE bundle_import_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.bundle_import_t IS 'Records signed composable bundle imports so host deltas can prove their required environment baseline before append.';
+
+
+--
+-- Name: COLUMN bundle_import_t.bundle_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.bundle_import_t.bundle_id IS 'Signed bundle identifier from bundle-manifest.json.';
+
+
+--
+-- Name: COLUMN bundle_import_t.bundle_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.bundle_import_t.bundle_mode IS 'Explicit bundle mode: environment, host-delta, or non-composable standalone-host.';
+
+
+--
+-- Name: COLUMN bundle_import_t.identity_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.bundle_import_t.identity_digest IS 'Canonical full baseline identity-set SHA-256 used for composition qualification.';
+
+
+--
+-- Name: COLUMN bundle_import_t.required_baseline_bundle_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.bundle_import_t.required_baseline_bundle_id IS 'Completed environment bundle required before this host delta may append.';
+
+
+--
+-- Name: COLUMN bundle_import_t.import_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.bundle_import_t.import_status IS 'Importer lifecycle state: IN_PROGRESS or COMPLETE.';
+
+
+--
+-- Name: COLUMN bundle_import_t.started_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.bundle_import_t.started_ts IS 'Timestamp when the coordinated importer registered the signed bundle.';
+
+
+--
+-- Name: COLUMN bundle_import_t.completed_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.bundle_import_t.completed_ts IS 'Timestamp when all canonical bundle events became durable.';
 
 
 --
@@ -15852,43 +18585,6 @@ COMMENT ON COLUMN public.event_replay_retention_log_t.created_ts IS 'Timestamp f
 
 
 --
--- Name: bundle_import_t; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.bundle_import_t (
-    bundle_id uuid NOT NULL,
-    bundle_mode character varying(32) NOT NULL,
-    identity_digest character varying(71) NOT NULL,
-    required_baseline_bundle_id uuid,
-    import_status character varying(16) DEFAULT 'IN_PROGRESS'::character varying NOT NULL,
-    started_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    completed_ts timestamp with time zone,
-    CONSTRAINT bundle_import_t_pkey PRIMARY KEY (bundle_id),
-    CONSTRAINT bundle_import_mode_ck CHECK (((bundle_mode)::text = ANY ((ARRAY['environment'::character varying, 'host-delta'::character varying, 'standalone-host'::character varying])::text[]))),
-    CONSTRAINT bundle_import_digest_ck CHECK (((identity_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
-    CONSTRAINT bundle_import_status_ck CHECK (((import_status)::text = ANY ((ARRAY['IN_PROGRESS'::character varying, 'COMPLETE'::character varying])::text[]))),
-    CONSTRAINT bundle_import_completion_ck CHECK ((((import_status)::text = 'COMPLETE'::text) = (completed_ts IS NOT NULL))),
-    CONSTRAINT bundle_import_baseline_ck CHECK (((((bundle_mode)::text = ANY ((ARRAY['environment'::character varying, 'standalone-host'::character varying])::text[])) AND (required_baseline_bundle_id IS NULL)) OR (((bundle_mode)::text = 'host-delta'::text) AND (required_baseline_bundle_id IS NOT NULL)))),
-    CONSTRAINT bundle_import_baseline_fk FOREIGN KEY (required_baseline_bundle_id) REFERENCES public.bundle_import_t(bundle_id)
-);
-
-
---
--- Name: TABLE bundle_import_t; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.bundle_import_t IS 'Records signed composable bundle imports so host deltas can prove their required environment baseline before append.';
-
-COMMENT ON COLUMN public.bundle_import_t.bundle_id IS 'Signed bundle identifier from bundle-manifest.json.';
-COMMENT ON COLUMN public.bundle_import_t.bundle_mode IS 'Explicit bundle mode: environment, host-delta, or non-composable standalone-host.';
-COMMENT ON COLUMN public.bundle_import_t.identity_digest IS 'Canonical full baseline identity-set SHA-256 used for composition qualification.';
-COMMENT ON COLUMN public.bundle_import_t.required_baseline_bundle_id IS 'Completed environment bundle required before this host delta may append.';
-COMMENT ON COLUMN public.bundle_import_t.import_status IS 'Importer lifecycle state: IN_PROGRESS or COMPLETE.';
-COMMENT ON COLUMN public.bundle_import_t.started_ts IS 'Timestamp when the coordinated importer registered the signed bundle.';
-COMMENT ON COLUMN public.bundle_import_t.completed_ts IS 'Timestamp when all canonical bundle events became durable.';
-
-
---
 -- Name: event_store_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -16292,6 +18988,13 @@ COMMENT ON COLUMN public.execution_attempt_t.accepted_by_origin_ts IS 'Timestamp
 
 
 --
+-- Name: COLUMN execution_attempt_t.workflow_reference_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.execution_attempt_t.workflow_reference_digest IS 'Digest binding Workflow process and task references admitted for this execution.';
+
+
+--
 -- Name: COLUMN execution_attempt_t.created_ts; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -16667,6 +19370,34 @@ COMMENT ON COLUMN public.execution_fixed_action_t.reconciliation_claim_token IS 
 --
 
 COMMENT ON COLUMN public.execution_fixed_action_t.reconciliation_lease_expires_ts IS 'Timestamp for the reconciliation lease expires event or state.';
+
+
+--
+-- Name: COLUMN execution_fixed_action_t.approval_nonce_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.execution_fixed_action_t.approval_nonce_digest IS 'Pinned nonce digest from signed Workflow approval evidence.';
+
+
+--
+-- Name: COLUMN execution_fixed_action_t.approval_expires_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.execution_fixed_action_t.approval_expires_ts IS 'Expiry from signed Workflow approval evidence.';
+
+
+--
+-- Name: COLUMN execution_fixed_action_t.approval_policy_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.execution_fixed_action_t.approval_policy_digest IS 'Policy digest from signed Workflow approval evidence.';
+
+
+--
+-- Name: COLUMN execution_fixed_action_t.approval_issuer; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.execution_fixed_action_t.approval_issuer IS 'Authenticated issuer of the Workflow approval evidence.';
 
 
 --
@@ -17896,14 +20627,14 @@ CREATE TABLE public.gateway_tool_publication_t (
     active boolean DEFAULT true NOT NULL,
     update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
     update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT gateway_tool_publication_t_access_policies_check CHECK (((access_policies IS NULL) OR (jsonb_typeof(access_policies) = 'array'::text))),
     CONSTRAINT gateway_tool_publication_t_aggregate_version_check CHECK ((aggregate_version > 0)),
     CONSTRAINT gateway_tool_publication_t_bindings_check CHECK ((jsonb_typeof(bindings) = 'array'::text)),
     CONSTRAINT gateway_tool_publication_t_candidate_digest_check CHECK (((candidate_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
     CONSTRAINT gateway_tool_publication_t_check CHECK ((((publication_mode)::text = 'REPLACE_API_SCOPE'::text) = (scope_api_version_id IS NOT NULL))),
+    CONSTRAINT gateway_tool_publication_t_compiled_endpoint_rules_check CHECK (((compiled_endpoint_rules IS NULL) OR (jsonb_typeof(compiled_endpoint_rules) = 'object'::text))),
+    CONSTRAINT gateway_tool_publication_t_compiled_rule_bodies_check CHECK (((compiled_rule_bodies IS NULL) OR (jsonb_typeof(compiled_rule_bodies) = 'object'::text))),
     CONSTRAINT gateway_tool_publication_t_compiled_tools_check CHECK ((jsonb_typeof(compiled_tools) = 'array'::text)),
-    CONSTRAINT gateway_tool_publication_t_compiled_endpoint_rules_check CHECK ((compiled_endpoint_rules IS NULL OR jsonb_typeof(compiled_endpoint_rules) = 'object'::text)),
-    CONSTRAINT gateway_tool_publication_t_compiled_rule_bodies_check CHECK ((compiled_rule_bodies IS NULL OR jsonb_typeof(compiled_rule_bodies) = 'object'::text)),
-    CONSTRAINT gateway_tool_publication_t_access_policies_check CHECK ((access_policies IS NULL OR jsonb_typeof(access_policies) = 'array'::text)),
     CONSTRAINT gateway_tool_publication_t_publication_mode_check CHECK (((publication_mode)::text = ANY (ARRAY[('ADD_OR_UPDATE'::character varying)::text, ('REPLACE_API_SCOPE'::character varying)::text]))),
     CONSTRAINT gateway_tool_publication_t_publication_version_check CHECK ((publication_version > 0))
 );
@@ -17985,10 +20716,39 @@ COMMENT ON COLUMN public.gateway_tool_publication_t.compiled_tools IS 'Compiled 
 
 COMMENT ON COLUMN public.gateway_tool_publication_t.bindings IS 'Bindings value for this gateway tool publication record.';
 
+
+--
+-- Name: COLUMN gateway_tool_publication_t.endpoint_rules_property_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.gateway_tool_publication_t.endpoint_rules_property_id IS 'Registered rule.endpointRules carrier property.';
+
+
+--
+-- Name: COLUMN gateway_tool_publication_t.rule_bodies_property_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.gateway_tool_publication_t.rule_bodies_property_id IS 'Registered rule.ruleBodies carrier property.';
+
+
+--
+-- Name: COLUMN gateway_tool_publication_t.compiled_endpoint_rules; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.gateway_tool_publication_t.compiled_endpoint_rules IS 'Canonical complete endpoint-rule carrier reviewed for this publication.';
+
+
+--
+-- Name: COLUMN gateway_tool_publication_t.compiled_rule_bodies; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.gateway_tool_publication_t.compiled_rule_bodies IS 'Canonical complete rule-body carrier reviewed for this publication.';
+
+
+--
+-- Name: COLUMN gateway_tool_publication_t.access_policies; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.gateway_tool_publication_t.access_policies IS 'Normalized Tool access policies captured by this publication.';
 
 
@@ -21176,7 +23936,7 @@ CREATE TABLE public.llm_provider_deployment_t (
     readiness_policy character varying(32) NOT NULL,
     expected_sidecar jsonb,
     bedrock_policy jsonb,
-    CONSTRAINT llm_provider_deployment_bedrock_policy_shape_ck CHECK (bedrock_policy IS NULL OR jsonb_typeof(bedrock_policy) = 'object'),
+    CONSTRAINT llm_provider_deployment_bedrock_policy_shape_ck CHECK (((bedrock_policy IS NULL) OR (jsonb_typeof(bedrock_policy) = 'object'::text))),
     CONSTRAINT llm_provider_deployment_readiness_ck CHECK (((readiness_policy)::text = ANY (ARRAY[('IMMEDIATE'::character varying)::text, ('WARM_BEFORE_ELIGIBLE'::character varying)::text]))),
     CONSTRAINT llm_provider_deployment_runtime_capacity_ck CHECK (((jsonb_typeof(runtime_capacity) = 'object'::text) AND ((runtime_capacity ->> 'maxParallelRequests'::text) ~ '^[1-9][0-9]*$'::text) AND ((runtime_capacity ->> 'maxQueuedRequests'::text) ~ '^[1-9][0-9]*$'::text) AND ((runtime_capacity ->> 'coldStartTimeoutMs'::text) ~ '^[1-9][0-9]*$'::text) AND ((runtime_capacity ->> 'streamSetupTimeoutMs'::text) ~ '^[1-9][0-9]*$'::text) AND ((runtime_capacity ->> 'requestTimeoutMs'::text) ~ '^[1-9][0-9]*$'::text))),
     CONSTRAINT llm_provider_deployment_sidecar_shape_ck CHECK (((expected_sidecar IS NULL) OR (jsonb_typeof(expected_sidecar) = 'object'::text))),
@@ -21337,6 +24097,205 @@ COMMENT ON COLUMN public.llm_provider_deployment_t.expected_sidecar IS 'Expected
 --
 
 COMMENT ON COLUMN public.llm_provider_deployment_t.bedrock_policy IS 'Bedrock Policy value for this llm provider deployment record.';
+
+
+--
+-- Name: llm_provider_endpoint_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.llm_provider_endpoint_t (
+    host_id uuid NOT NULL,
+    provider_endpoint_id uuid NOT NULL,
+    provider_account_id uuid NOT NULL,
+    endpoint_name character varying(126) NOT NULL,
+    provider_type character varying(32) NOT NULL,
+    provider_protocol character varying(32) NOT NULL,
+    aws_region character varying(64),
+    base_url text NOT NULL,
+    headers jsonb DEFAULT '{}'::jsonb NOT NULL,
+    endpoint_auth_mode character varying(16) DEFAULT 'BEARER'::character varying NOT NULL,
+    api_key_header character varying(32),
+    network_profile_mode character varying(24) DEFAULT 'PUBLIC_TLS'::character varying NOT NULL,
+    network_termination character varying(32) DEFAULT 'NATIVE'::character varying NOT NULL,
+    network_zone_id uuid,
+    trust_bundle_reference character varying(1024),
+    trust_bundle_sha256 character varying(64),
+    pool_idle_timeout_ms bigint DEFAULT 30000 NOT NULL,
+    client_refresh_interval_ms bigint DEFAULT 300000 NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    CONSTRAINT llm_provider_endpoint_auth_ck CHECK ((((endpoint_auth_mode)::text = ANY (ARRAY[('NONE'::character varying)::text, ('BEARER'::character varying)::text, ('API_KEY'::character varying)::text, ('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text])) AND (((endpoint_auth_mode)::text = 'API_KEY'::text) = (api_key_header IS NOT NULL)) AND ((api_key_header IS NULL) OR ((api_key_header)::text = ANY (ARRAY[('authorization'::character varying)::text, ('x-api-key'::character varying)::text]))))),
+    CONSTRAINT llm_provider_endpoint_bedrock_ck CHECK (((((provider_type)::text = 'aws_bedrock'::text) = ((provider_protocol)::text = 'bedrock_converse'::text)) AND ((((provider_type)::text = 'aws_bedrock'::text) AND ((aws_region)::text ~ '^[a-z0-9]+(-[a-z0-9]+)+-[0-9]+$'::text) AND ((endpoint_auth_mode)::text = ANY (ARRAY[('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text]))) OR (((provider_type)::text <> 'aws_bedrock'::text) AND (aws_region IS NULL) AND ((endpoint_auth_mode)::text <> ALL (ARRAY[('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text])))))),
+    CONSTRAINT llm_provider_endpoint_pool_ck CHECK (((pool_idle_timeout_ms > 0) AND (client_refresh_interval_ms >= pool_idle_timeout_ms))),
+    CONSTRAINT llm_provider_endpoint_profile_ck CHECK ((((network_profile_mode)::text = ANY (ARRAY[('PUBLIC_TLS'::character varying)::text, ('PRIVATE_TLS'::character varying)::text, ('PRIVATE_PLAINTEXT'::character varying)::text])) AND ((network_termination)::text = ANY (ARRAY[('NATIVE'::character varying)::text, ('LIGHT_GATEWAY_SIDECAR'::character varying)::text])) AND ((((network_profile_mode)::text = 'PUBLIC_TLS'::text) AND (base_url ~ '^https://'::text) AND (network_zone_id IS NULL)) OR (((network_profile_mode)::text = 'PRIVATE_TLS'::text) AND (base_url ~ '^https://'::text) AND (network_zone_id IS NOT NULL)) OR (((network_profile_mode)::text = 'PRIVATE_PLAINTEXT'::text) AND (base_url ~ '^http://'::text) AND (network_zone_id IS NOT NULL) AND ((endpoint_auth_mode)::text = 'NONE'::text))))),
+    CONSTRAINT llm_provider_endpoint_protocol_ck CHECK (((provider_protocol)::text = ANY (ARRAY[('openai_chat'::character varying)::text, ('openai_responses'::character varying)::text, ('openai_embeddings'::character varying)::text, ('anthropic_messages'::character varying)::text, ('bedrock_converse'::character varying)::text]))),
+    CONSTRAINT llm_provider_endpoint_t_aggregate_version_check CHECK ((aggregate_version > 0)),
+    CONSTRAINT llm_provider_endpoint_t_headers_check CHECK ((jsonb_typeof(headers) = 'object'::text)),
+    CONSTRAINT llm_provider_endpoint_trust_ck CHECK (((((network_profile_mode)::text = 'PRIVATE_TLS'::text) = ((trust_bundle_reference IS NOT NULL) AND (trust_bundle_sha256 IS NOT NULL))) AND ((trust_bundle_sha256 IS NULL) OR ((trust_bundle_sha256)::text ~ '^[0-9a-f]{64}$'::text))))
+);
+
+
+--
+-- Name: TABLE llm_provider_endpoint_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.llm_provider_endpoint_t IS 'Stores llm provider endpoint records used by the Portal GenAI control plane and Light Gateway runtime.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.host_id IS 'Tenant host identifier that scopes this record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.provider_endpoint_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_endpoint_id IS 'Identifier for the related provider endpoint.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.provider_account_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_account_id IS 'Identifier for the related provider account.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.endpoint_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.endpoint_name IS 'Endpoint Name value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.provider_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_type IS 'Provider Type value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.provider_protocol; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_protocol IS 'Provider Protocol value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.aws_region; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.aws_region IS 'Aws Region value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.base_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.base_url IS 'Base Url value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.headers; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.headers IS 'Headers value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.endpoint_auth_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.endpoint_auth_mode IS 'Endpoint Auth Mode value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.api_key_header; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.api_key_header IS 'Api Key Header value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.network_profile_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.network_profile_mode IS 'Network Profile Mode value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.network_termination; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.network_termination IS 'Network Termination value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.network_zone_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.network_zone_id IS 'Identifier for the related network zone.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.trust_bundle_reference; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.trust_bundle_reference IS 'Trust Bundle Reference value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.trust_bundle_sha256; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.trust_bundle_sha256 IS 'Trust Bundle Sha256 value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.pool_idle_timeout_ms; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.pool_idle_timeout_ms IS 'Pool Idle Timeout Ms value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.client_refresh_interval_ms; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.client_refresh_interval_ms IS 'Client Refresh Interval Ms value for this llm provider endpoint record.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.aggregate_version IS 'Version value for aggregate.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.active IS 'Indicates whether this record is active.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: COLUMN llm_provider_endpoint_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_provider_endpoint_t.update_user IS 'User or service principal that last updated this record.';
 
 
 --
@@ -21545,236 +24504,27 @@ COMMENT ON COLUMN public.llm_public_alias_t.bound_workload_principal IS 'Bound W
 
 
 --
--- Name: llm_provider_endpoint_t; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.llm_provider_endpoint_t (
-    host_id uuid NOT NULL,
-    provider_endpoint_id uuid NOT NULL,
-    provider_account_id uuid NOT NULL,
-    endpoint_name character varying(126) NOT NULL,
-    provider_type character varying(32) NOT NULL,
-    provider_protocol character varying(32) NOT NULL,
-    aws_region character varying(64),
-    base_url text NOT NULL,
-    headers jsonb DEFAULT '{}'::jsonb NOT NULL,
-    endpoint_auth_mode character varying(16) DEFAULT 'BEARER'::character varying NOT NULL,
-    api_key_header character varying(32),
-    network_profile_mode character varying(24) DEFAULT 'PUBLIC_TLS'::character varying NOT NULL,
-    network_termination character varying(32) DEFAULT 'NATIVE'::character varying NOT NULL,
-    network_zone_id uuid,
-    trust_bundle_reference character varying(1024),
-    trust_bundle_sha256 character varying(64),
-    pool_idle_timeout_ms bigint DEFAULT 30000 NOT NULL,
-    client_refresh_interval_ms bigint DEFAULT 300000 NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    CONSTRAINT llm_provider_endpoint_auth_ck CHECK ((((endpoint_auth_mode)::text = ANY (ARRAY[('NONE'::character varying)::text, ('BEARER'::character varying)::text, ('API_KEY'::character varying)::text, ('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text])) AND (((endpoint_auth_mode)::text = 'API_KEY'::text) = (api_key_header IS NOT NULL)) AND ((api_key_header IS NULL) OR ((api_key_header)::text = ANY (ARRAY[('authorization'::character varying)::text, ('x-api-key'::character varying)::text]))))),
-    CONSTRAINT llm_provider_endpoint_bedrock_ck CHECK (((((provider_type)::text = 'aws_bedrock'::text) = ((provider_protocol)::text = 'bedrock_converse'::text)) AND ((((provider_type)::text = 'aws_bedrock'::text) AND ((aws_region)::text ~ '^[a-z0-9]+(-[a-z0-9]+)+-[0-9]+$'::text) AND ((endpoint_auth_mode)::text = ANY (ARRAY[('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text]))) OR (((provider_type)::text <> 'aws_bedrock'::text) AND (aws_region IS NULL) AND ((endpoint_auth_mode)::text <> ALL (ARRAY[('BEDROCK_API_KEY'::character varying)::text, ('AWS_SIGV4'::character varying)::text])))))),
-    CONSTRAINT llm_provider_endpoint_pool_ck CHECK (((pool_idle_timeout_ms > 0) AND (client_refresh_interval_ms >= pool_idle_timeout_ms))),
-    CONSTRAINT llm_provider_endpoint_profile_ck CHECK ((((network_profile_mode)::text = ANY (ARRAY[('PUBLIC_TLS'::character varying)::text, ('PRIVATE_TLS'::character varying)::text, ('PRIVATE_PLAINTEXT'::character varying)::text])) AND ((network_termination)::text = ANY (ARRAY[('NATIVE'::character varying)::text, ('LIGHT_GATEWAY_SIDECAR'::character varying)::text])) AND ((((network_profile_mode)::text = 'PUBLIC_TLS'::text) AND (base_url ~ '^https://'::text) AND (network_zone_id IS NULL)) OR (((network_profile_mode)::text = 'PRIVATE_TLS'::text) AND (base_url ~ '^https://'::text) AND (network_zone_id IS NOT NULL)) OR (((network_profile_mode)::text = 'PRIVATE_PLAINTEXT'::text) AND (base_url ~ '^http://'::text) AND (network_zone_id IS NOT NULL) AND ((endpoint_auth_mode)::text = 'NONE'::text))))),
-    CONSTRAINT llm_provider_endpoint_protocol_ck CHECK (((provider_protocol)::text = ANY (ARRAY[('openai_chat'::character varying)::text, ('openai_responses'::character varying)::text, ('openai_embeddings'::character varying)::text, ('anthropic_messages'::character varying)::text, ('bedrock_converse'::character varying)::text]))),
-    CONSTRAINT llm_provider_endpoint_t_aggregate_version_check CHECK ((aggregate_version > 0)),
-    CONSTRAINT llm_provider_endpoint_t_headers_check CHECK ((jsonb_typeof(headers) = 'object'::text)),
-    CONSTRAINT llm_provider_endpoint_trust_ck CHECK (((((network_profile_mode)::text = 'PRIVATE_TLS'::text) = ((trust_bundle_reference IS NOT NULL) AND (trust_bundle_sha256 IS NOT NULL))) AND ((trust_bundle_sha256 IS NULL) OR ((trust_bundle_sha256)::text ~ '^[0-9a-f]{64}$'::text))))
-);
-
-
---
--- Name: TABLE llm_provider_endpoint_t; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.llm_provider_endpoint_t IS 'Stores llm provider endpoint records used by the Portal GenAI control plane and Light Gateway runtime.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.host_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.host_id IS 'Tenant host identifier that scopes this record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.provider_endpoint_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_endpoint_id IS 'Identifier for the related provider endpoint.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.provider_account_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_account_id IS 'Identifier for the related provider account.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.endpoint_name; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.endpoint_name IS 'Endpoint Name value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.provider_type; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_type IS 'Provider Type value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.provider_protocol; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.provider_protocol IS 'Provider Protocol value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.aws_region; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.aws_region IS 'Aws Region value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.base_url; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.base_url IS 'Base Url value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.headers; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.headers IS 'Headers value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.endpoint_auth_mode; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.endpoint_auth_mode IS 'Endpoint Auth Mode value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.api_key_header; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.api_key_header IS 'Api Key Header value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.network_profile_mode; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.network_profile_mode IS 'Network Profile Mode value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.network_termination; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.network_termination IS 'Network Termination value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.network_zone_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.network_zone_id IS 'Identifier for the related network zone.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.trust_bundle_reference; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.trust_bundle_reference IS 'Trust Bundle Reference value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.trust_bundle_sha256; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.trust_bundle_sha256 IS 'Trust Bundle Sha256 value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.pool_idle_timeout_ms; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.pool_idle_timeout_ms IS 'Pool Idle Timeout Ms value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.client_refresh_interval_ms; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.client_refresh_interval_ms IS 'Client Refresh Interval Ms value for this llm provider endpoint record.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.aggregate_version IS 'Version value for aggregate.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.active; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.active IS 'Indicates whether this record is active.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.update_ts; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.update_ts IS 'Timestamp when this record was last updated.';
-
-
---
--- Name: COLUMN llm_provider_endpoint_t.update_user; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.llm_provider_endpoint_t.update_user IS 'User or service principal that last updated this record.';
-
-
-
---
 -- Name: knowledge_qualified_embedding_alias_v; Type: VIEW; Schema: public; Owner: -
 --
 
 CREATE VIEW public.knowledge_qualified_embedding_alias_v AS
- SELECT alias.host_id, alias.host_id AS alias_owner_host_id, alias.public_alias_id, alias.alias_name,
-        alias.required_capabilities->'embeddingSpace' AS embedding_space,
-        true AS active, alias.update_ts, count(*) AS eligible_route_count
- FROM public.llm_public_alias_t alias
- JOIN public.llm_alias_route_t route ON route.host_id=alias.host_id
-  AND route.public_alias_id=alias.public_alias_id AND route.active IS TRUE
- JOIN public.llm_provider_deployment_t deployment ON deployment.host_id=route.host_id
-  AND deployment.provider_deployment_id=route.provider_deployment_id AND deployment.active IS TRUE
- JOIN public.llm_provider_endpoint_t endpoint ON endpoint.host_id=deployment.host_id
-  AND endpoint.provider_endpoint_id=deployment.provider_endpoint_id AND endpoint.active IS TRUE
-  AND endpoint.provider_protocol='openai_embeddings'
- JOIN public.llm_model_registration_t registration ON registration.host_id=deployment.host_id
-  AND registration.model_registration_id=deployment.model_registration_id AND registration.active IS TRUE
- JOIN public.llm_model_t model ON model.model_id=registration.model_id AND model.active IS TRUE
- WHERE alias.active IS TRUE AND alias.operations ? 'embed' AND alias.require_expected_embedding_space IS TRUE
-  AND (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'space'
-       = alias.required_capabilities->'embeddingSpace'
- GROUP BY alias.host_id,alias.public_alias_id,alias.alias_name,alias.required_capabilities->'embeddingSpace',alias.update_ts
- HAVING bool_and(
-  jsonb_array_length(COALESCE(
-   (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'supportedDimensions',
-   (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'dimensions'))=1
-  AND COALESCE(
-   (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'supportedDimensions',
-   (model.declared_capabilities || registration.capability_restrictions)->'embedding'->'dimensions')
-   @> jsonb_build_array((alias.required_capabilities->'embeddingSpace'->>'dimension')::integer));
+ SELECT alias.host_id,
+    alias.host_id AS alias_owner_host_id,
+    alias.public_alias_id,
+    alias.alias_name,
+    (alias.required_capabilities -> 'embeddingSpace'::text) AS embedding_space,
+    true AS active,
+    alias.update_ts,
+    count(*) AS eligible_route_count
+   FROM (((((public.llm_public_alias_t alias
+     JOIN public.llm_alias_route_t route ON (((route.host_id = alias.host_id) AND (route.public_alias_id = alias.public_alias_id) AND (route.active IS TRUE))))
+     JOIN public.llm_provider_deployment_t deployment ON (((deployment.host_id = route.host_id) AND (deployment.provider_deployment_id = route.provider_deployment_id) AND (deployment.active IS TRUE))))
+     JOIN public.llm_provider_endpoint_t endpoint ON (((endpoint.host_id = deployment.host_id) AND (endpoint.provider_endpoint_id = deployment.provider_endpoint_id) AND (endpoint.active IS TRUE) AND ((endpoint.provider_protocol)::text = 'openai_embeddings'::text))))
+     JOIN public.llm_model_registration_t registration ON (((registration.host_id = deployment.host_id) AND (registration.model_registration_id = deployment.model_registration_id) AND (registration.active IS TRUE))))
+     JOIN public.llm_model_t model ON (((model.model_id = registration.model_id) AND (model.active IS TRUE))))
+  WHERE ((alias.active IS TRUE) AND (alias.operations ? 'embed'::text) AND (alias.require_expected_embedding_space IS TRUE) AND ((((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'space'::text) = (alias.required_capabilities -> 'embeddingSpace'::text)))
+  GROUP BY alias.host_id, alias.public_alias_id, alias.alias_name, (alias.required_capabilities -> 'embeddingSpace'::text), alias.update_ts
+ HAVING bool_and(((jsonb_array_length(COALESCE((((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'supportedDimensions'::text), (((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'dimensions'::text))) = 1) AND (COALESCE((((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'supportedDimensions'::text), (((model.declared_capabilities || registration.capability_restrictions) -> 'embedding'::text) -> 'dimensions'::text)) @> jsonb_build_array((((alias.required_capabilities -> 'embeddingSpace'::text) ->> 'dimension'::text))::integer))));
 
 
 --
@@ -22281,6 +25031,119 @@ COMMENT ON COLUMN public.knowledge_source_t.update_user IS 'User or service prin
 
 
 --
+-- Name: llm_gateway_delegation_policy_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.llm_gateway_delegation_policy_t (
+    host_id uuid NOT NULL,
+    instance_id uuid NOT NULL,
+    security_profile_id uuid NOT NULL,
+    endpoints jsonb NOT NULL,
+    schema_version integer DEFAULT 1 NOT NULL,
+    migration_provenance jsonb,
+    aggregate_version bigint NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(255),
+    update_ts timestamp with time zone,
+    delete_user character varying(255),
+    delete_ts timestamp with time zone,
+    CONSTRAINT llm_gateway_delegation_policy_t_endpoints_check CHECK ((jsonb_typeof(endpoints) = 'object'::text)),
+    CONSTRAINT llm_gateway_delegation_policy_t_schema_version_check CHECK ((schema_version = 1))
+);
+
+
+--
+-- Name: TABLE llm_gateway_delegation_policy_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.llm_gateway_delegation_policy_t IS 'Event-authored per-instance endpoint requirements referencing an environment trust profile.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.host_id IS 'Host owning this record.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.instance_id IS 'Gateway instance within the owning host.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.security_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.security_profile_id IS 'Stable event aggregate identifier for the shared trust profile.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.endpoints; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.endpoints IS 'Explicit workload-token requirement for each supported inference endpoint.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.schema_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.schema_version IS 'Version of the authoring contract.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.migration_provenance; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.migration_provenance IS 'Evidence retained from authoring migration.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.aggregate_version IS 'Last applied event aggregate version.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.active IS 'Whether this record is active.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.update_user IS 'Actor responsible for the latest update.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.update_ts IS 'Timestamp of the latest update.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.delete_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.delete_user IS 'Actor responsible for soft deletion.';
+
+
+--
+-- Name: COLUMN llm_gateway_delegation_policy_t.delete_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.delete_ts IS 'Timestamp of soft deletion.';
+
+
+--
 -- Name: llm_gateway_instance_property_ownership_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -22484,6 +25347,109 @@ COMMENT ON COLUMN public.llm_gateway_instance_publication_t.update_user IS 'User
 
 
 --
+-- Name: llm_gateway_ownership_release_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.llm_gateway_ownership_release_t (
+    host_id uuid NOT NULL,
+    ownership_release_id uuid NOT NULL,
+    instance_id uuid NOT NULL,
+    instance_publication_id uuid NOT NULL,
+    config_properties jsonb NOT NULL,
+    aggregate_version bigint NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(255),
+    update_ts timestamp with time zone,
+    delete_user character varying(255),
+    delete_ts timestamp with time zone
+);
+
+
+--
+-- Name: TABLE llm_gateway_ownership_release_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.llm_gateway_ownership_release_t IS 'Idempotent ownership-release projection retaining exact generic baseline material.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.host_id IS 'Host owning this record.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.ownership_release_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.ownership_release_id IS 'Stable identifier of the ownership release event.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.instance_id IS 'Gateway instance within the owning host.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.instance_publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.instance_publication_id IS 'Publication application whose ownership was released.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.config_properties; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.config_properties IS 'Exact property values and stream versions retained as generic baselines.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.aggregate_version IS 'Last applied event aggregate version.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.active IS 'Whether this record is active.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.update_user IS 'Actor responsible for the latest update.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.update_ts IS 'Timestamp of the latest update.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.delete_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.delete_user IS 'Actor responsible for soft deletion.';
+
+
+--
+-- Name: COLUMN llm_gateway_ownership_release_t.delete_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_ownership_release_t.delete_ts IS 'Timestamp of soft deletion.';
+
+
+--
 -- Name: llm_gateway_publication_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -22659,6 +25625,120 @@ COMMENT ON COLUMN public.llm_gateway_publication_t.update_ts IS 'Timestamp when 
 --
 
 COMMENT ON COLUMN public.llm_gateway_publication_t.update_user IS 'User or service principal that last updated this record.';
+
+
+--
+-- Name: llm_gateway_security_profile_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.llm_gateway_security_profile_t (
+    host_id uuid NOT NULL,
+    security_profile_id uuid NOT NULL,
+    environment character varying(16) NOT NULL,
+    user_issuer text NOT NULL,
+    user_audience text NOT NULL,
+    schema_version integer DEFAULT 1 NOT NULL,
+    aggregate_version bigint NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(255),
+    update_ts timestamp with time zone,
+    delete_user character varying(255),
+    delete_ts timestamp with time zone,
+    CONSTRAINT llm_gateway_security_profile_t_schema_version_check CHECK ((schema_version = 1)),
+    CONSTRAINT llm_gateway_security_profile_t_user_audience_check CHECK ((length(TRIM(BOTH FROM user_audience)) > 0)),
+    CONSTRAINT llm_gateway_security_profile_t_user_issuer_check CHECK ((length(TRIM(BOTH FROM user_issuer)) > 0))
+);
+
+
+--
+-- Name: TABLE llm_gateway_security_profile_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.llm_gateway_security_profile_t IS 'Event-authored user trust profile shared by host and logical environment.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.host_id IS 'Host owning this record.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.security_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.security_profile_id IS 'Stable event aggregate identifier for the shared trust profile.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.environment IS 'Logical environment matching the gateway instance environment.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.user_issuer; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.user_issuer IS 'Trusted delegated user token issuer.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.user_audience; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.user_audience IS 'Trusted delegated user token audience.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.schema_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.schema_version IS 'Version of the authoring contract.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.aggregate_version IS 'Last applied event aggregate version.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.active IS 'Whether this record is active.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.update_user IS 'Actor responsible for the latest update.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.update_ts IS 'Timestamp of the latest update.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.delete_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.delete_user IS 'Actor responsible for soft deletion.';
+
+
+--
+-- Name: COLUMN llm_gateway_security_profile_t.delete_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_gateway_security_profile_t.delete_ts IS 'Timestamp of soft deletion.';
 
 
 --
@@ -23842,41 +26922,9 @@ COMMENT ON COLUMN public.notification_t.read_ts IS 'Timestamp for the read event
 
 
 --
--- Name: org_t; Type: TABLE; Schema: public; Owner: -
+-- Name: operational_reference_evidence_t; Type: TABLE; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.agent_action_attempt_t.execution_reference_digest IS 'Digest of the authenticated execution reference accepted by Agent reconciliation.';
-COMMENT ON COLUMN public.agent_approval_t.consumed_execution_reference_digest IS 'Digest of signed evidence binding approval consumption to an execution.';
-COMMENT ON COLUMN public.agent_memory_bank_t.agent_definition_version IS 'Agent definition version accepted when the bank was created.';
-COMMENT ON COLUMN public.agent_memory_bank_t.agent_definition_digest IS 'Agent definition digest accepted when the bank was created.';
-COMMENT ON COLUMN public.agent_memory_bank_t.user_identity_digest IS 'Digest of the authenticated user identity accepted for the bank.';
-COMMENT ON COLUMN public.agent_memory_directive_t.agent_def_id IS 'Agent definition targeted by an immutable hard directive.';
-COMMENT ON COLUMN public.agent_memory_directive_t.agent_definition_version IS 'Agent definition version targeted by an immutable hard directive.';
-COMMENT ON COLUMN public.agent_memory_directive_t.bank_profile IS 'Published bank profile selector, independent of a concrete runtime bank.';
-COMMENT ON COLUMN public.agent_memory_directive_t.scope_selector IS 'Published Host, user, or session scope selector for the directive.';
-COMMENT ON COLUMN public.agent_memory_directive_t.policy_digest IS 'Digest binding the hard directive to the Agent policy publication.';
-COMMENT ON COLUMN public.agent_memory_directive_t.publication_id IS 'Agent publication carrying the hard directive.';
-COMMENT ON COLUMN public.agent_memory_entity_t.user_identity_digest IS 'Digest of the authenticated user identity accepted for the entity.';
-COMMENT ON COLUMN public.agent_policy_snapshot_t.agent_definition_version IS 'Pinned Agent definition version represented by this evidence snapshot.';
-COMMENT ON COLUMN public.agent_policy_snapshot_t.agent_publication_id IS 'Pinned Agent publication represented by this evidence snapshot.';
-COMMENT ON COLUMN public.agent_policy_snapshot_t.agent_content_digest IS 'Digest of the accepted complete Agent publication.';
-COMMENT ON COLUMN public.agent_quota_usage_t.quota_policy_version IS 'Pinned quota-policy version used for this accounting window.';
-COMMENT ON COLUMN public.agent_quota_usage_t.quota_policy_digest IS 'Pinned quota-policy digest used for this accounting window.';
-COMMENT ON COLUMN public.agent_session_t.agent_publication_id IS 'Pinned Agent publication accepted at session admission.';
-COMMENT ON COLUMN public.agent_session_t.agent_content_digest IS 'Digest of the complete Agent publication accepted at session admission.';
-COMMENT ON COLUMN public.agent_session_t.agent_definition_digest IS 'Pinned Agent definition digest accepted at session admission.';
-COMMENT ON COLUMN public.agent_session_t.user_identity_digest IS 'Digest of the authenticated user identity accepted at session admission.';
-COMMENT ON COLUMN public.agent_session_t.model_provider IS 'Pinned model provider accepted at session admission.';
-COMMENT ON COLUMN public.agent_session_t.model_name IS 'Pinned model alias accepted at session admission.';
-COMMENT ON COLUMN public.agent_session_t.service_pool_maximum_concurrency IS 'Pinned service-pool capacity used only with operational occupancy rows.';
-COMMENT ON COLUMN public.agent_session_t.execution_session_reference_digest IS 'Digest of the authenticated execution-session reference.';
-COMMENT ON COLUMN public.agent_turn_t.scheduling_request_reference_digest IS 'Digest of the authenticated scheduling-request reference.';
-COMMENT ON COLUMN public.agent_turn_t.execution_reference_digest IS 'Digest of the authenticated execution-attempt reference.';
-COMMENT ON COLUMN public.execution_attempt_t.workflow_reference_digest IS 'Digest binding Workflow process and task references admitted for this execution.';
-COMMENT ON COLUMN public.execution_fixed_action_t.approval_nonce_digest IS 'Pinned nonce digest from signed Workflow approval evidence.';
-COMMENT ON COLUMN public.execution_fixed_action_t.approval_expires_ts IS 'Expiry from signed Workflow approval evidence.';
-COMMENT ON COLUMN public.execution_fixed_action_t.approval_policy_digest IS 'Policy digest from signed Workflow approval evidence.';
-COMMENT ON COLUMN public.execution_fixed_action_t.approval_issuer IS 'Authenticated issuer of the Workflow approval evidence.';
 CREATE TABLE public.operational_reference_evidence_t (
     host_id uuid NOT NULL,
     reference_id uuid NOT NULL,
@@ -23895,31 +26943,133 @@ CREATE TABLE public.operational_reference_evidence_t (
     accepted_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     reconciled_ts timestamp with time zone,
     CONSTRAINT operational_reference_evidence_digest_ck CHECK (((content_digest)::text ~ '^(sha256:)?[0-9A-Fa-f]{64}$'::text)),
-    CONSTRAINT operational_reference_evidence_state_ck CHECK (state IN ('ACCEPTED', 'MISSING', 'STALE', 'REVOKED')),
-    CONSTRAINT operational_reference_evidence_version_ck CHECK (((target_version IS NULL) OR (target_version > 0))),
-    CONSTRAINT operational_reference_evidence_t_pkey PRIMARY KEY (host_id, reference_id),
-    CONSTRAINT operational_reference_evidence_source_uk UNIQUE (host_id, source_service, source_table, source_record_id, reference_kind)
+    CONSTRAINT operational_reference_evidence_state_ck CHECK (((state)::text = ANY ((ARRAY['ACCEPTED'::character varying, 'MISSING'::character varying, 'STALE'::character varying, 'REVOKED'::character varying])::text[]))),
+    CONSTRAINT operational_reference_evidence_version_ck CHECK (((target_version IS NULL) OR (target_version > 0)))
 );
 
+
+--
+-- Name: TABLE operational_reference_evidence_t; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON TABLE public.operational_reference_evidence_t IS 'Pinned application-level evidence replacing control-plane and cross-service foreign keys.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.host_id IS 'Tenant Host scope accepted by the runtime projection.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.reference_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.reference_id IS 'Stable identifier for this accepted reference evidence.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.source_service; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.source_service IS 'Runtime service that admitted the source record.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.source_table; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.source_table IS 'Logical source table owning the reference.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.source_record_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.source_record_id IS 'Stable identifier of the source operational record.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.reference_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.reference_kind IS 'Stable application-level reference kind.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.target_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.target_id IS 'Pinned target identifier.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.target_version; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.target_version IS 'Pinned target version when the target is versioned.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.publication_id IS 'Accepted control-plane publication identifier when applicable.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.content_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.content_digest IS 'Accepted target or publication content digest.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.issuer; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.issuer IS 'Authenticated service or projection issuer.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.audience; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.audience IS 'Runtime audience authorized to consume the reference.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.state; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.state IS 'Current reconciliation state of the accepted reference.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.evidence; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.evidence IS 'Bounded non-secret admission evidence.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.accepted_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.accepted_ts IS 'Timestamp when the application accepted the reference.';
+
+
+--
+-- Name: COLUMN operational_reference_evidence_t.reconciled_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_evidence_t.reconciled_ts IS 'Timestamp of the most recent reconciliation.';
 
-CREATE INDEX operational_reference_evidence_reconcile_idx ON public.operational_reference_evidence_t USING btree (host_id, state, reconciled_ts);
+
+--
+-- Name: operational_reference_reconciliation_t; Type: TABLE; Schema: public; Owner: -
+--
 
 CREATE TABLE public.operational_reference_reconciliation_t (
     host_id uuid NOT NULL,
@@ -23936,53 +27086,824 @@ CREATE TABLE public.operational_reference_reconciliation_t (
     diagnostic jsonb DEFAULT '{}'::jsonb NOT NULL,
     checked_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT operational_reference_reconciliation_digest_ck CHECK ((((accepted_digest)::text ~ '^(sha256:)?[0-9A-Fa-f]{64}$'::text) AND ((observed_digest IS NULL) OR ((observed_digest)::text ~ '^(sha256:)?[0-9A-Fa-f]{64}$'::text)))),
-    CONSTRAINT operational_reference_reconciliation_status_ck CHECK (status IN ('CURRENT', 'MISSING', 'STALE', 'REVOKED')),
-    CONSTRAINT operational_reference_reconciliation_t_pkey PRIMARY KEY (host_id, reconciliation_id)
+    CONSTRAINT operational_reference_reconciliation_status_ck CHECK (((status)::text = ANY ((ARRAY['CURRENT'::character varying, 'MISSING'::character varying, 'STALE'::character varying, 'REVOKED'::character varying])::text[])))
 );
+
+
+--
+-- Name: TABLE operational_reference_reconciliation_t; Type: COMMENT; Schema: public; Owner: -
+--
 
 COMMENT ON TABLE public.operational_reference_reconciliation_t IS 'Append-only reconciliation outcomes for pinned operational references.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.host_id IS 'Tenant Host scope for the reconciliation.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.reconciliation_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.reconciliation_id IS 'Stable identifier for this reconciliation outcome.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.reference_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.reference_id IS 'Accepted reference identifier being reconciled.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.source_service; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.source_service IS 'Runtime service owning the source record.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.source_table; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.source_table IS 'Logical source table owning the reference.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.source_record_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.source_record_id IS 'Stable identifier of the source operational record.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.reference_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.reference_kind IS 'Stable application-level reference kind.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.target_id; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.target_id IS 'Pinned target identifier.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.accepted_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.accepted_digest IS 'Digest accepted at admission.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.observed_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.observed_digest IS 'Digest observed during reconciliation, when present.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.status; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.status IS 'CURRENT, MISSING, STALE, or REVOKED reconciliation result.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.diagnostic; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.diagnostic IS 'Bounded non-secret reconciliation diagnostics.';
+
+
+--
+-- Name: COLUMN operational_reference_reconciliation_t.checked_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
 COMMENT ON COLUMN public.operational_reference_reconciliation_t.checked_ts IS 'Timestamp when reconciliation completed.';
 
-CREATE INDEX operational_reference_reconciliation_lookup_idx ON public.operational_reference_reconciliation_t USING btree (host_id, reference_id, checked_ts DESC);
 
-CREATE TABLE public.runtime_operational_scope_t (
+--
+-- Name: operational_store_binding_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.operational_store_binding_t (
+    binding_id uuid NOT NULL,
     host_id uuid NOT NULL,
-    environment character varying(64) NOT NULL,
-    service_id character varying(255) NOT NULL,
-    instance_id uuid NOT NULL,
-    publication_id uuid NOT NULL,
-    content_digest character varying(128) NOT NULL,
-    audience character varying(64) NOT NULL,
+    environment character varying(32),
+    scope_kind character varying(32) DEFAULT 'HOST_ENVIRONMENT'::character varying NOT NULL,
+    scope_id uuid NOT NULL,
+    profile_id character varying(126) NOT NULL,
+    profile_version bigint NOT NULL,
+    deployment_profile character varying(32) NOT NULL,
+    lifecycle_state character varying(32) NOT NULL,
+    desired_generation bigint NOT NULL,
+    observed_generation bigint DEFAULT 0 NOT NULL,
+    expected_database character varying(63) DEFAULT 'operations'::character varying NOT NULL,
+    secret_ref character varying(512) NOT NULL,
+    binding_digest character varying(71) NOT NULL,
+    credential_generation bigint DEFAULT 1 NOT NULL,
+    retention_hold boolean DEFAULT false NOT NULL,
+    retention_reason character varying(512),
+    failure_code character varying(126),
+    provider_resource_ref character varying(512),
+    published boolean DEFAULT false NOT NULL,
+    revocation_epoch bigint DEFAULT 0 NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
     active boolean DEFAULT true NOT NULL,
-    accepted_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    last_seen_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT runtime_operational_scope_digest_ck CHECK (((content_digest)::text ~ '^(sha256:)?[0-9A-Fa-f]{64}$'::text)),
-    CONSTRAINT runtime_operational_scope_t_pkey PRIMARY KEY (host_id, service_id, instance_id)
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    contract_version bigint DEFAULT 1 NOT NULL,
+    engine character varying(32),
+    server_host character varying(253),
+    port integer,
+    tls_mode character varying(32),
+    runtime_username character varying(63),
+    credential_source character varying(32),
+    minimum_schema_generation bigint,
+    CONSTRAINT operational_store_binding_contract_ck CHECK ((contract_version = ANY (ARRAY[(1)::bigint, (2)::bigint]))),
+    CONSTRAINT operational_store_binding_database_ck CHECK (((expected_database)::text ~ '^[a-z][a-z0-9_]{0,62}$'::text)),
+    CONSTRAINT operational_store_binding_deployment_ck CHECK (((deployment_profile)::text = ANY ((ARRAY['DEV_DEDICATED'::character varying, 'DEV_POOLED'::character varying, 'CUSTOMER_MANAGED'::character varying])::text[]))),
+    CONSTRAINT operational_store_binding_digest_ck CHECK (((binding_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT operational_store_binding_environment_ck CHECK (((environment IS NULL) OR ((environment)::text ~ '^[a-z][a-z0-9_-]{0,31}$'::text))),
+    CONSTRAINT operational_store_binding_generation_ck CHECK (((desired_generation > 0) AND (observed_generation >= 0) AND (observed_generation <= desired_generation) AND (credential_generation > 0) AND (credential_generation <= '9007199254740991'::bigint) AND ((contract_version = 1) OR ((minimum_schema_generation > 0) AND (minimum_schema_generation <= '9007199254740991'::bigint))))),
+    CONSTRAINT operational_store_binding_no_secret_ck CHECK (((secret_ref)::text !~* '(postgres(ql)?://|password=|pwd=)'::text)),
+    CONSTRAINT operational_store_binding_publication_ck CHECK (((NOT published) OR ((contract_version = 1) AND ((lifecycle_state)::text = 'READY'::text)) OR ((contract_version = 2) AND ((lifecycle_state)::text = 'REGISTERED'::text)))),
+    CONSTRAINT operational_store_binding_registration_fields_ck CHECK (((contract_version = 1) OR (((engine)::text = 'POSTGRESQL'::text) AND ((server_host)::text ~ '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$'::text) AND ((port >= 1) AND (port <= 65535)) AND ((tls_mode)::text = ANY ((ARRAY['DISABLE'::character varying, 'PREFER'::character varying, 'REQUIRE'::character varying, 'VERIFY_CA'::character varying, 'VERIFY_FULL'::character varying])::text[])) AND ((credential_source)::text = 'MOUNTED_FILE'::text) AND ((secret_ref)::text ~~ '/%'::text)))),
+    CONSTRAINT operational_store_binding_revocation_ck CHECK (((revocation_epoch >= 0) AND (aggregate_version > 0))),
+    CONSTRAINT operational_store_binding_scope_ck CHECK ((((contract_version = 1) AND ((scope_kind)::text = 'HOST_ENVIRONMENT'::text) AND (scope_id = host_id) AND (environment IS NOT NULL)) OR ((contract_version = 2) AND ((scope_kind)::text = 'HOST'::text) AND (scope_id = host_id) AND (environment IS NULL)))),
+    CONSTRAINT operational_store_binding_secret_ck CHECK ((((contract_version = 1) AND ((secret_ref)::text ~ '^operational-store/[0-9a-f-]{36}/[a-z][a-z0-9_-]{0,31}/runtime$'::text)) OR ((contract_version = 2) AND ((length((secret_ref)::text) >= 1) AND (length((secret_ref)::text) <= 512))))),
+    CONSTRAINT operational_store_binding_secret_scope_ck CHECK (((contract_version = 2) OR ((secret_ref)::text = (((('operational-store/'::text || (host_id)::text) || '/'::text) || (environment)::text) || '/runtime'::text)))),
+    CONSTRAINT operational_store_binding_state_ck CHECK ((((contract_version = 1) AND ((lifecycle_state)::text = ANY ((ARRAY['REQUESTED'::character varying, 'PROVISIONING'::character varying, 'READY'::character varying, 'FAILED'::character varying, 'ROTATING'::character varying, 'DEACTIVATION_REQUESTED'::character varying, 'DEACTIVATED'::character varying, 'RETENTION_HOLD'::character varying, 'DECOMMISSION_REQUESTED'::character varying, 'DECOMMISSIONING'::character varying, 'DECOMMISSIONED'::character varying])::text[]))) OR ((contract_version = 2) AND ((lifecycle_state)::text = ANY ((ARRAY['REGISTERED'::character varying, 'DEACTIVATED'::character varying, 'UNREGISTERED'::character varying])::text[])))))
 );
 
-COMMENT ON TABLE public.runtime_operational_scope_t IS 'Accepted runtime Host and environment scope used without a Config Server host foreign key.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.host_id IS 'Tenant Host identifier accepted from the runtime projection.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.environment IS 'Environment tag accepted from the runtime projection.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.service_id IS 'Service identifier bound to this runtime scope.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.instance_id IS 'Runtime instance identifier bound to this scope.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.publication_id IS 'Control-plane publication identifier accepted by the runtime.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.content_digest IS 'Digest of the accepted audience projection.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.audience IS 'Projection audience accepted by the runtime.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.active IS 'Whether the scope remains eligible for admission.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.accepted_ts IS 'Timestamp when the runtime first accepted the scope.';
-COMMENT ON COLUMN public.runtime_operational_scope_t.last_seen_ts IS 'Timestamp when the runtime most recently confirmed the scope.';
+
+--
+-- Name: TABLE operational_store_binding_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.operational_store_binding_t IS 'Host-scoped registration of an externally provisioned operational database and its runtime connection contract.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.binding_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.binding_id IS 'Identifier of the binding associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.environment IS 'Logical deployment environment within the owning host.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.scope_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.scope_kind IS 'Kind of operational scope to which the binding applies.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.scope_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.scope_id IS 'Identifier of the scope associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.profile_id IS 'Identifier of the profile associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.profile_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.profile_version IS 'Version of the referenced operational-store profile.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.deployment_profile; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.deployment_profile IS 'Deployment topology selected for the operational store.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.lifecycle_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.lifecycle_state IS 'Current registration and readiness state of the binding.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.desired_generation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.desired_generation IS 'Requested configuration generation to reconcile.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.observed_generation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.observed_generation IS 'Latest configuration generation observed by reconciliation.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.expected_database; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.expected_database IS 'Expected externally provisioned database identity.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.secret_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.secret_ref IS 'Reference to credentials kept outside Portal data.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.binding_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.binding_digest IS 'Digest of the approved binding configuration.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.credential_generation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.credential_generation IS 'Generation of the referenced runtime credentials.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.retention_hold; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.retention_hold IS 'Whether retention policy prevents releasing the binding.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.retention_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.retention_reason IS 'Explanation for the retention hold.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.failure_code; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.failure_code IS 'Machine-readable code identifying the latest failure.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.provider_resource_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.provider_resource_ref IS 'Provider-side reference for the registered resource.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.published; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.published IS 'Whether a runtime projection has been published for the binding.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.revocation_epoch; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.revocation_epoch IS 'Monotonic revocation counter used to invalidate older publications.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.contract_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.contract_version IS 'Version of the runtime contract implemented by the profile or binding.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.engine; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.engine IS 'Database engine expected by the runtime contract.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.server_host; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.server_host IS 'Hostname of the externally managed database server.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.port; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.port IS 'Database server TCP port.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.tls_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.tls_mode IS 'TLS mode required for the runtime connection.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.runtime_username; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.runtime_username IS 'Database role used by the runtime service.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.credential_source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.credential_source IS 'Mechanism through which the runtime obtains credentials.';
+
+
+--
+-- Name: COLUMN operational_store_binding_t.minimum_schema_generation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_binding_t.minimum_schema_generation IS 'Minimum schema generation required by the runtime.';
+
+
+--
+-- Name: operational_store_instance_property_ownership_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.operational_store_instance_property_ownership_t (
+    host_id uuid NOT NULL,
+    instance_id uuid NOT NULL,
+    property_id uuid NOT NULL,
+    binding_id uuid NOT NULL,
+    binding_version bigint NOT NULL,
+    environment character varying(32) NOT NULL,
+    property_value text NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT operational_store_instance_property_ownership_environment_ck CHECK (((environment)::text ~ '^[a-z][a-z0-9_-]{0,31}$'::text)),
+    CONSTRAINT operational_store_instance_property_ownership_no_secret_ck CHECK ((property_value !~* '(postgres(ql)?://|password=|pwd=)'::text)),
+    CONSTRAINT operational_store_instance_property_ownership_version_ck CHECK ((binding_version > 0))
+);
+
+
+--
+-- Name: TABLE operational_store_instance_property_ownership_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.operational_store_instance_property_ownership_t IS 'Tracks instance properties owned by an operational-store binding for publication and cleanup.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.instance_id IS 'Identifier of the instance associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.property_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.property_id IS 'Identifier of the property associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.binding_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.binding_id IS 'Identifier of the binding associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.binding_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.binding_version IS 'Version of the operational-store binding represented by this publication.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.environment IS 'Logical deployment environment within the owning host.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.property_value; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.property_value IS 'Published instance-property value owned by this binding.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN operational_store_instance_property_ownership_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_instance_property_ownership_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: operational_store_profile_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.operational_store_profile_t (
+    profile_id character varying(126) NOT NULL,
+    profile_version bigint NOT NULL,
+    deployment_profile character varying(32) NOT NULL,
+    provider character varying(32) NOT NULL,
+    profile_config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT operational_store_profile_config_ck CHECK ((jsonb_typeof(profile_config) = 'object'::text)),
+    CONSTRAINT operational_store_profile_deployment_ck CHECK (((deployment_profile)::text = ANY ((ARRAY['DEV_DEDICATED'::character varying, 'DEV_POOLED'::character varying, 'CUSTOMER_MANAGED'::character varying])::text[]))),
+    CONSTRAINT operational_store_profile_dev_pooled_ck CHECK ((((deployment_profile)::text <> 'DEV_POOLED'::text) OR (active = false))),
+    CONSTRAINT operational_store_profile_provider_ck CHECK (((provider)::text = ANY ((ARRAY['POSTGRESQL'::character varying, 'CUSTOMER_MANAGED'::character varying])::text[]))),
+    CONSTRAINT operational_store_profile_version_ck CHECK (((profile_version > 0) AND (aggregate_version > 0)))
+);
+
+
+--
+-- Name: TABLE operational_store_profile_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.operational_store_profile_t IS 'Versioned operational-store profiles; retained provisioning profiles are read-only compatibility records.';
+
+
+--
+-- Name: COLUMN operational_store_profile_t.profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_profile_t.profile_id IS 'Identifier of the profile associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_profile_t.profile_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_profile_t.profile_version IS 'Version of the referenced operational-store profile.';
+
+
+--
+-- Name: COLUMN operational_store_profile_t.deployment_profile; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_profile_t.deployment_profile IS 'Deployment topology selected for the operational store.';
+
+
+--
+-- Name: COLUMN operational_store_profile_t.provider; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_profile_t.provider IS 'Provider implementation associated with the legacy profile.';
+
+
+--
+-- Name: COLUMN operational_store_profile_t.profile_config; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_profile_t.profile_config IS 'Provider-specific configuration for the selected profile.';
+
+
+--
+-- Name: COLUMN operational_store_profile_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_profile_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN operational_store_profile_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_profile_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN operational_store_profile_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_profile_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN operational_store_profile_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_profile_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: operational_store_provisioning_job_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.operational_store_provisioning_job_t (
+    job_id uuid NOT NULL,
+    binding_id uuid NOT NULL,
+    desired_generation bigint NOT NULL,
+    operation_kind character varying(32) NOT NULL,
+    job_state character varying(16) DEFAULT 'PENDING'::character varying NOT NULL,
+    idempotency_key character varying(256) NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    lease_owner character varying(126),
+    lease_expires_ts timestamp with time zone,
+    fencing_token bigint DEFAULT 0 NOT NULL,
+    next_attempt_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_error_code character varying(126),
+    created_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT operational_store_provisioning_job_generation_ck CHECK (((desired_generation > 0) AND (attempt_count >= 0) AND (fencing_token >= 0))),
+    CONSTRAINT operational_store_provisioning_job_operation_ck CHECK (((operation_kind)::text = ANY ((ARRAY['PROVISION'::character varying, 'RETRY'::character varying, 'ROTATE'::character varying, 'DEACTIVATE'::character varying, 'DECOMMISSION'::character varying])::text[]))),
+    CONSTRAINT operational_store_provisioning_job_state_ck CHECK (((job_state)::text = ANY ((ARRAY['PENDING'::character varying, 'CLAIMED'::character varying, 'COMPLETED'::character varying, 'FAILED'::character varying, 'CANCELLED'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE operational_store_provisioning_job_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.operational_store_provisioning_job_t IS 'Read-only history of retired version-1 provisioning jobs and their lease evidence.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.job_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.job_id IS 'Identifier of the job associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.binding_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.binding_id IS 'Identifier of the binding associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.desired_generation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.desired_generation IS 'Requested configuration generation to reconcile.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.operation_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.operation_kind IS 'Type of requested legacy provisioning operation.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.job_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.job_state IS 'Persisted state of the legacy provisioning job.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.idempotency_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.idempotency_key IS 'Key used to identify duplicate requests for the operation.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.attempt_count; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.attempt_count IS 'Number of dispatch or reconciliation attempts already made.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.lease_owner; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.lease_owner IS 'Worker identity holding the reconciliation lease.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.lease_expires_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.lease_expires_ts IS 'Timestamp at which the worker lease expires.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.fencing_token; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.fencing_token IS 'Monotonic token rejecting writes from expired workers.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.next_attempt_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.next_attempt_ts IS 'Earliest timestamp when another attempt may run.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.last_error_code; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.last_error_code IS 'Machine-readable code for the most recent job failure.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.created_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.created_ts IS 'Timestamp when the record was created.';
+
+
+--
+-- Name: COLUMN operational_store_provisioning_job_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_provisioning_job_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: operational_store_publication_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.operational_store_publication_t (
+    binding_id uuid NOT NULL,
+    binding_version bigint NOT NULL,
+    host_id uuid NOT NULL,
+    environment character varying(32),
+    publication_state character varying(16) NOT NULL,
+    content_digest character varying(71) NOT NULL,
+    projection jsonb NOT NULL,
+    revocation_epoch bigint DEFAULT 0 NOT NULL,
+    valid_from timestamp with time zone NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT operational_store_publication_digest_ck CHECK (((content_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT operational_store_publication_no_secret_ck CHECK (((projection)::text !~* '(postgres(ql)?://|password|credential(material|value|secret|token|url))'::text)),
+    CONSTRAINT operational_store_publication_projection_ck CHECK ((jsonb_typeof(projection) = 'object'::text)),
+    CONSTRAINT operational_store_publication_state_ck CHECK (((publication_state)::text = ANY ((ARRAY['ACTIVE'::character varying, 'REVOKED'::character varying])::text[]))),
+    CONSTRAINT operational_store_publication_version_ck CHECK (((binding_version > 0) AND (revocation_epoch >= 0)))
+);
+
+
+--
+-- Name: TABLE operational_store_publication_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.operational_store_publication_t IS 'Versioned runtime connection projections compiled from operational-store bindings.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.binding_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.binding_id IS 'Identifier of the binding associated with this record.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.binding_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.binding_version IS 'Version of the operational-store binding represented by this publication.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.environment IS 'Logical deployment environment within the owning host.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.publication_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.publication_state IS 'Lifecycle state of this immutable publication.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.content_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.content_digest IS 'Digest of the immutable published content.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.projection; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.projection IS 'Immutable runtime projection of the registered operational store.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.revocation_epoch; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.revocation_epoch IS 'Monotonic revocation counter used to invalidate older publications.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.valid_from; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.valid_from IS 'Timestamp from which the publication or key is valid.';
+
+
+--
+-- Name: COLUMN operational_store_publication_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.operational_store_publication_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: org_t; Type: TABLE; Schema: public; Owner: -
+--
 
 CREATE TABLE public.org_t (
     domain character varying(64) NOT NULL,
@@ -26610,6 +30531,263 @@ COMMENT ON COLUMN public.product_version_t.update_ts IS 'Timestamp when this rec
 
 
 --
+-- Name: promotion_item_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.promotion_item_t (
+    promotion_id uuid NOT NULL,
+    item_id uuid NOT NULL,
+    plan_order integer NOT NULL,
+    entity_type character varying(64) NOT NULL,
+    entity_id character varying(512) NOT NULL,
+    action character varying(16) NOT NULL,
+    aggregate_id character varying(1024),
+    target_aggregate_version bigint DEFAULT 0 NOT NULL,
+    source_snapshot jsonb,
+    target_snapshot jsonb,
+    diff_summary jsonb,
+    execution_status character varying(24) DEFAULT 'PENDING'::character varying NOT NULL,
+    event_id uuid,
+    event_type character varying(128),
+    expected_projection_version bigint,
+    observed_projection_version bigint,
+    projection_checked_ts timestamp with time zone,
+    failure_code character varying(128),
+    error_message text,
+    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT promotion_item_t_action_check CHECK (((action)::text = ANY (ARRAY[('CREATE'::character varying)::text, ('UPDATE'::character varying)::text, ('DELETE'::character varying)::text, ('NOOP'::character varying)::text]))),
+    CONSTRAINT promotion_item_t_execution_status_check CHECK (((execution_status)::text = ANY (ARRAY[('PENDING'::character varying)::text, ('NOOP'::character varying)::text, ('SKIPPED'::character varying)::text, ('APPEND_ACCEPTED'::character varying)::text, ('PROJECTION_PENDING'::character varying)::text, ('COMPLETED'::character varying)::text, ('TIMED_OUT'::character varying)::text, ('FAILED'::character varying)::text])))
+);
+
+
+--
+-- Name: TABLE promotion_item_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.promotion_item_t IS 'Ordered entity changes and per-item projection evidence within a promotion.';
+
+
+--
+-- Name: COLUMN promotion_item_t.promotion_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.promotion_id IS 'Identifier of the promotion associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_item_t.item_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.item_id IS 'Identifier of the item associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_item_t.plan_order; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.plan_order IS 'Execution order of this item within the promotion plan.';
+
+
+--
+-- Name: COLUMN promotion_item_t.entity_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.entity_type IS 'Type of entity being promoted.';
+
+
+--
+-- Name: COLUMN promotion_item_t.entity_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.entity_id IS 'Identifier of the entity associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_item_t.action; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.action IS 'Planned operation to apply to the target entity.';
+
+
+--
+-- Name: COLUMN promotion_item_t.aggregate_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.aggregate_id IS 'Aggregate identity of the affected event-sourced entity.';
+
+
+--
+-- Name: COLUMN promotion_item_t.target_aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.target_aggregate_version IS 'Version of the referenced target aggregate.';
+
+
+--
+-- Name: COLUMN promotion_item_t.source_snapshot; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.source_snapshot IS 'Immutable source state used to build the promotion plan.';
+
+
+--
+-- Name: COLUMN promotion_item_t.target_snapshot; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.target_snapshot IS 'Target state captured when the promotion plan was built.';
+
+
+--
+-- Name: COLUMN promotion_item_t.diff_summary; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.diff_summary IS 'Summary of changes between the source and target snapshots.';
+
+
+--
+-- Name: COLUMN promotion_item_t.execution_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.execution_status IS 'Current execution state of the promotion item.';
+
+
+--
+-- Name: COLUMN promotion_item_t.event_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.event_id IS 'Identifier of the event associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_item_t.event_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.event_type IS 'Type of the event appended for this promotion item.';
+
+
+--
+-- Name: COLUMN promotion_item_t.expected_projection_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.expected_projection_version IS 'Aggregate version the target projection must reach.';
+
+
+--
+-- Name: COLUMN promotion_item_t.observed_projection_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.observed_projection_version IS 'Latest observed target projection version.';
+
+
+--
+-- Name: COLUMN promotion_item_t.projection_checked_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.projection_checked_ts IS 'Timestamp of the most recent projection check.';
+
+
+--
+-- Name: COLUMN promotion_item_t.failure_code; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.failure_code IS 'Machine-readable code identifying the latest failure.';
+
+
+--
+-- Name: COLUMN promotion_item_t.error_message; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.error_message IS 'Redacted diagnostic describing an item failure.';
+
+
+--
+-- Name: COLUMN promotion_item_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN promotion_item_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_item_t.update_ts IS 'Timestamp of the most recent update.';
+
+
+--
+-- Name: promotion_recovery_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.promotion_recovery_t (
+    recovery_id uuid NOT NULL,
+    promotion_id uuid NOT NULL,
+    recovery_action character varying(16) NOT NULL,
+    requested_by uuid NOT NULL,
+    outcome character varying(32) NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT promotion_recovery_t_action_check CHECK (((recovery_action)::text = ANY (ARRAY[('RECHECK'::character varying)::text, ('RECONCILE'::character varying)::text, ('REPLAN'::character varying)::text])))
+);
+
+
+--
+-- Name: TABLE promotion_recovery_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.promotion_recovery_t IS 'Audit history of explicitly requested promotion recovery operations.';
+
+
+--
+-- Name: COLUMN promotion_recovery_t.recovery_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_recovery_t.recovery_id IS 'Identifier of the recovery associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_recovery_t.promotion_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_recovery_t.promotion_id IS 'Identifier of the promotion associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_recovery_t.recovery_action; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_recovery_t.recovery_action IS 'Recovery operation requested for the promotion.';
+
+
+--
+-- Name: COLUMN promotion_recovery_t.requested_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_recovery_t.requested_by IS 'Principal requesting promotion recovery.';
+
+
+--
+-- Name: COLUMN promotion_recovery_t.outcome; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_recovery_t.outcome IS 'Recorded outcome of the recovery operation.';
+
+
+--
+-- Name: COLUMN promotion_recovery_t.details; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_recovery_t.details IS 'Structured diagnostic details for the recovery attempt.';
+
+
+--
+-- Name: COLUMN promotion_recovery_t.created_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_recovery_t.created_ts IS 'Timestamp when the record was created.';
+
+
+--
 -- Name: promotion_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -26638,109 +30816,184 @@ CREATE TABLE public.promotion_t (
     active boolean DEFAULT true NOT NULL,
     update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
     update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT promotion_t_pkey PRIMARY KEY (promotion_id),
-    CONSTRAINT promotion_t_status_check CHECK ((promotion_status)::text = ANY ((ARRAY[
-        'PLANNED'::character varying,
-        'BLOCKED'::character varying,
-        'APPEND_ACCEPTED'::character varying,
-        'COMPLETED'::character varying,
-        'TIMED_OUT'::character varying,
-        'FAILED'::character varying
-    ])::text[])),
-    CONSTRAINT promotion_t_projection_status_check CHECK ((projection_status)::text = ANY ((ARRAY[
-        'NOT_STARTED'::character varying,
-        'PENDING'::character varying,
-        'COMPLETED'::character varying,
-        'FAILED'::character varying,
-        'TIMED_OUT'::character varying
-    ])::text[])),
-    CONSTRAINT promotion_t_supersedes_fk FOREIGN KEY (supersedes_promotion_id)
-        REFERENCES public.promotion_t(promotion_id)
+    CONSTRAINT promotion_t_projection_status_check CHECK (((projection_status)::text = ANY (ARRAY[('NOT_STARTED'::character varying)::text, ('PENDING'::character varying)::text, ('COMPLETED'::character varying)::text, ('FAILED'::character varying)::text, ('TIMED_OUT'::character varying)::text]))),
+    CONSTRAINT promotion_t_status_check CHECK (((promotion_status)::text = ANY (ARRAY[('PLANNED'::character varying)::text, ('BLOCKED'::character varying)::text, ('APPEND_ACCEPTED'::character varying)::text, ('COMPLETED'::character varying)::text, ('TIMED_OUT'::character varying)::text, ('FAILED'::character varying)::text])))
 );
 
 
 --
--- Name: promotion_item_t; Type: TABLE; Schema: public; Owner: -
+-- Name: TABLE promotion_t; Type: COMMENT; Schema: public; Owner: -
 --
 
-CREATE TABLE public.promotion_item_t (
-    promotion_id uuid NOT NULL,
-    item_id uuid NOT NULL,
-    plan_order integer NOT NULL,
-    entity_type character varying(64) NOT NULL,
-    entity_id character varying(512) NOT NULL,
-    action character varying(16) NOT NULL,
-    aggregate_id character varying(1024),
-    target_aggregate_version bigint DEFAULT 0 NOT NULL,
-    source_snapshot jsonb,
-    target_snapshot jsonb,
-    diff_summary jsonb,
-    execution_status character varying(24) DEFAULT 'PENDING'::character varying NOT NULL,
-    event_id uuid,
-    event_type character varying(128),
-    expected_projection_version bigint,
-    observed_projection_version bigint,
-    projection_checked_ts timestamp with time zone,
-    failure_code character varying(128),
-    error_message text,
-    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT promotion_item_t_pkey PRIMARY KEY (promotion_id, item_id),
-    CONSTRAINT promotion_item_t_promotion_fk FOREIGN KEY (promotion_id)
-        REFERENCES public.promotion_t(promotion_id) ON DELETE CASCADE,
-    CONSTRAINT promotion_item_t_action_check CHECK ((action)::text = ANY ((ARRAY[
-        'CREATE'::character varying,
-        'UPDATE'::character varying,
-        'DELETE'::character varying,
-        'NOOP'::character varying
-    ])::text[])),
-    CONSTRAINT promotion_item_t_execution_status_check CHECK ((execution_status)::text = ANY ((ARRAY[
-        'PENDING'::character varying,
-        'NOOP'::character varying,
-        'SKIPPED'::character varying,
-        'APPEND_ACCEPTED'::character varying,
-        'PROJECTION_PENDING'::character varying,
-        'COMPLETED'::character varying,
-        'TIMED_OUT'::character varying,
-        'FAILED'::character varying
-    ])::text[]))
-);
+COMMENT ON TABLE public.promotion_t IS 'Promotion plan, event-append result, and target projection convergence state.';
 
 
 --
--- Name: promotion_recovery_t; Type: TABLE; Schema: public; Owner: -
+-- Name: COLUMN promotion_t.promotion_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-CREATE TABLE public.promotion_recovery_t (
-    recovery_id uuid NOT NULL,
-    promotion_id uuid NOT NULL,
-    recovery_action character varying(16) NOT NULL,
-    requested_by uuid NOT NULL,
-    outcome character varying(32) NOT NULL,
-    details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT promotion_recovery_t_pkey PRIMARY KEY (recovery_id),
-    CONSTRAINT promotion_recovery_t_promotion_fk FOREIGN KEY (promotion_id)
-        REFERENCES public.promotion_t(promotion_id) ON DELETE CASCADE,
-    CONSTRAINT promotion_recovery_t_action_check CHECK ((recovery_action)::text = ANY ((ARRAY[
-        'RECHECK'::character varying,
-        'RECONCILE'::character varying,
-        'REPLAN'::character varying
-    ])::text[]))
-);
+COMMENT ON COLUMN public.promotion_t.promotion_id IS 'Identifier of the promotion associated with this record.';
 
 
-CREATE INDEX promotion_t_source_host_idx
-    ON public.promotion_t USING btree (source_host_id, update_ts DESC);
-CREATE INDEX promotion_t_target_host_idx
-    ON public.promotion_t USING btree (target_host_id, update_ts DESC);
-CREATE UNIQUE INDEX promotion_item_t_entity_idx
-    ON public.promotion_item_t USING btree (promotion_id, entity_type, entity_id);
-CREATE INDEX promotion_t_projection_pending_idx
-    ON public.promotion_t USING btree (projection_status, projection_deadline_ts)
-    WHERE projection_status = 'PENDING';
-CREATE INDEX promotion_recovery_t_promotion_idx
-    ON public.promotion_recovery_t USING btree (promotion_id, created_ts DESC);
+--
+-- Name: COLUMN promotion_t.source_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.source_host_id IS 'Identifier of the source host associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_t.target_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.target_host_id IS 'Identifier of the target host associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_t.entity_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.entity_type IS 'Type of entity being promoted.';
+
+
+--
+-- Name: COLUMN promotion_t.promotion_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.promotion_status IS 'Current state of the promotion lifecycle.';
+
+
+--
+-- Name: COLUMN promotion_t.plan_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.plan_version IS 'Version of the accepted promotion plan.';
+
+
+--
+-- Name: COLUMN promotion_t.snapshot_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.snapshot_digest IS 'Digest identifying the captured promotion source snapshot.';
+
+
+--
+-- Name: COLUMN promotion_t.source_snapshot; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.source_snapshot IS 'Immutable source state used to build the promotion plan.';
+
+
+--
+-- Name: COLUMN promotion_t.plan_summary; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.plan_summary IS 'Summary of the operations in the promotion plan.';
+
+
+--
+-- Name: COLUMN promotion_t.missing_dependencies; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.missing_dependencies IS 'Dependencies that must be satisfied before promotion.';
+
+
+--
+-- Name: COLUMN promotion_t.created_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.created_by IS 'Principal who created the promotion request.';
+
+
+--
+-- Name: COLUMN promotion_t.accepted_transaction_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.accepted_transaction_id IS 'Identifier of the accepted transaction associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_t.append_event_count; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.append_event_count IS 'Number of events appended by the accepted transaction.';
+
+
+--
+-- Name: COLUMN promotion_t.executed_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.executed_ts IS 'Timestamp when promotion execution completed.';
+
+
+--
+-- Name: COLUMN promotion_t.projection_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.projection_status IS 'State of projection convergence after event append.';
+
+
+--
+-- Name: COLUMN promotion_t.projection_deadline_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.projection_deadline_ts IS 'Deadline for target projection convergence.';
+
+
+--
+-- Name: COLUMN promotion_t.projection_checked_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.projection_checked_ts IS 'Timestamp of the most recent projection check.';
+
+
+--
+-- Name: COLUMN promotion_t.projection_completed_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.projection_completed_ts IS 'Timestamp when target projections reached the expected versions.';
+
+
+--
+-- Name: COLUMN promotion_t.failure_code; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.failure_code IS 'Machine-readable code identifying the latest failure.';
+
+
+--
+-- Name: COLUMN promotion_t.failure_message; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.failure_message IS 'Redacted explanation of the promotion failure.';
+
+
+--
+-- Name: COLUMN promotion_t.supersedes_promotion_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.supersedes_promotion_id IS 'Identifier of the supersedes promotion associated with this record.';
+
+
+--
+-- Name: COLUMN promotion_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN promotion_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN promotion_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.promotion_t.update_ts IS 'Timestamp of the most recent update.';
 
 
 --
@@ -28453,6 +32706,48 @@ COMMENT ON COLUMN public.runner_scheduling_request_t.edge_binding_id IS 'Identif
 
 
 --
+-- Name: COLUMN runner_scheduling_request_t.workflow_reference_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runner_scheduling_request_t.workflow_reference_digest IS 'Digest binding admitted Workflow process and task references.';
+
+
+--
+-- Name: COLUMN runner_scheduling_request_t.approval_evidence_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runner_scheduling_request_t.approval_evidence_digest IS 'Digest of signed Workflow approval evidence accepted before reservation.';
+
+
+--
+-- Name: COLUMN runner_scheduling_request_t.edge_binding_compatibility_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runner_scheduling_request_t.edge_binding_compatibility_digest IS 'Pinned compatibility digest from the runner-binding projection.';
+
+
+--
+-- Name: COLUMN runner_scheduling_request_t.edge_binding_revocation_epoch; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runner_scheduling_request_t.edge_binding_revocation_epoch IS 'Pinned revocation epoch from the runner-binding projection.';
+
+
+--
+-- Name: COLUMN runner_scheduling_request_t.resolved_policy; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runner_scheduling_request_t.resolved_policy IS 'Immutable resolved execution policy captured when scheduling the request.';
+
+
+--
+-- Name: COLUMN runner_scheduling_request_t.definition_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runner_scheduling_request_t.definition_digest IS 'Digest of the workflow definition captured when scheduling the request.';
+
+
+--
 -- Name: COLUMN runner_scheduling_request_t.created_ts; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -28515,13 +32810,6 @@ CREATE TABLE public.runner_session_t (
     CONSTRAINT runner_session_t_maximum_concurrency_check CHECK ((maximum_concurrency > 0)),
     CONSTRAINT runner_session_t_reported_available_capacity_check CHECK ((reported_available_capacity >= 0))
 );
-
-COMMENT ON COLUMN public.runner_scheduling_request_t.workflow_reference_digest IS 'Digest binding admitted Workflow process and task references.';
-COMMENT ON COLUMN public.runner_scheduling_request_t.approval_evidence_digest IS 'Digest of signed Workflow approval evidence accepted before reservation.';
-COMMENT ON COLUMN public.runner_scheduling_request_t.edge_binding_compatibility_digest IS 'Pinned compatibility digest from the runner-binding projection.';
-COMMENT ON COLUMN public.runner_scheduling_request_t.edge_binding_revocation_epoch IS 'Pinned revocation epoch from the runner-binding projection.';
-COMMENT ON COLUMN public.runner_session_t.environment IS 'Environment accepted from the runner operational scope.';
-COMMENT ON COLUMN public.runner_session_t.scope_binding_digest IS 'Digest of the Host and environment binding accepted at registration.';
 
 
 --
@@ -28693,6 +32981,20 @@ COMMENT ON COLUMN public.runner_session_t.disconnected_ts IS 'Timestamp for the 
 
 
 --
+-- Name: COLUMN runner_session_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runner_session_t.environment IS 'Environment accepted from the runner operational scope.';
+
+
+--
+-- Name: COLUMN runner_session_t.scope_binding_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runner_session_t.scope_binding_digest IS 'Digest of the Host and environment binding accepted at registration.';
+
+
+--
 -- Name: runtime_instance_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -28748,20 +33050,6 @@ COMMENT ON COLUMN public.runtime_instance_t.service_id IS 'Identifier for the re
 
 
 --
--- Name: COLUMN runtime_instance_t.service_version; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.runtime_instance_t.service_version IS 'Typed build version last reported by the connected runtime.';
-
-
---
--- Name: COLUMN runtime_instance_t.operational_metadata; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.runtime_instance_t.operational_metadata IS 'Complete controller metadata tag map last reported by the connected runtime.';
-
-
---
 -- Name: COLUMN runtime_instance_t.env_tag; Type: COMMENT; Schema: public; Owner: -
 --
 
@@ -28794,6 +33082,20 @@ COMMENT ON COLUMN public.runtime_instance_t.port_number IS 'Port Number value fo
 --
 
 COMMENT ON COLUMN public.runtime_instance_t.instance_status IS 'Instance Status value for this runtime instance record.';
+
+
+--
+-- Name: COLUMN runtime_instance_t.service_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_instance_t.service_version IS 'Typed build version last reported by the connected runtime.';
+
+
+--
+-- Name: COLUMN runtime_instance_t.operational_metadata; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_instance_t.operational_metadata IS 'Complete controller metadata tag map last reported by the connected runtime.';
 
 
 --
@@ -28850,6 +33152,102 @@ COMMENT ON COLUMN public.runtime_instance_t.update_user IS 'User or service prin
 --
 
 COMMENT ON COLUMN public.runtime_instance_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: runtime_operational_scope_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.runtime_operational_scope_t (
+    host_id uuid NOT NULL,
+    environment character varying(64) NOT NULL,
+    service_id character varying(255) NOT NULL,
+    instance_id uuid NOT NULL,
+    publication_id uuid NOT NULL,
+    content_digest character varying(128) NOT NULL,
+    audience character varying(64) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    accepted_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_seen_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT runtime_operational_scope_digest_ck CHECK (((content_digest)::text ~ '^(sha256:)?[0-9A-Fa-f]{64}$'::text))
+);
+
+
+--
+-- Name: TABLE runtime_operational_scope_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.runtime_operational_scope_t IS 'Accepted runtime Host and environment scope used without a Config Server host foreign key.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.host_id IS 'Tenant Host identifier accepted from the runtime projection.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.environment; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.environment IS 'Environment tag accepted from the runtime projection.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.service_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.service_id IS 'Service identifier bound to this runtime scope.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.instance_id IS 'Runtime instance identifier bound to this scope.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.publication_id IS 'Control-plane publication identifier accepted by the runtime.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.content_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.content_digest IS 'Digest of the accepted audience projection.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.audience; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.audience IS 'Projection audience accepted by the runtime.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.active IS 'Whether the scope remains eligible for admission.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.accepted_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.accepted_ts IS 'Timestamp when the runtime first accepted the scope.';
+
+
+--
+-- Name: COLUMN runtime_operational_scope_t.last_seen_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.runtime_operational_scope_t.last_seen_ts IS 'Timestamp when the runtime most recently confirmed the scope.';
 
 
 --
@@ -29671,6 +34069,112 @@ COMMENT ON COLUMN public.skill_package_t.created_ts IS 'Timestamp for the create
 --
 
 COMMENT ON COLUMN public.skill_package_t.updated_ts IS 'Timestamp for the updated event or state.';
+
+
+--
+-- Name: skill_publication_alias_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.skill_publication_alias_t (
+    host_id uuid NOT NULL,
+    publication_alias character varying(128) NOT NULL,
+    skill_id uuid NOT NULL,
+    skill_version character varying(20) NOT NULL,
+    skill_digest character varying(71) NOT NULL,
+    first_publication_id uuid,
+    frozen boolean DEFAULT false NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT skill_publication_alias_digest_ck CHECK (((skill_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT skill_publication_alias_shape_ck CHECK (((publication_alias)::text ~ '^[a-z0-9][a-z0-9._-]{0,127}$'::text)),
+    CONSTRAINT skill_publication_alias_version_ck CHECK ((aggregate_version > 0))
+);
+
+
+--
+-- Name: TABLE skill_publication_alias_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.skill_publication_alias_t IS 'Stable opaque public Skill identity immutably mapped to one Portal Skill.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.host_id IS 'Tenant host that owns this record.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.publication_alias; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.publication_alias IS 'Stable public name used to address the skill.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.skill_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.skill_id IS 'Identifier of the skill associated with this record.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.skill_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.skill_version IS 'Version of the referenced skill.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.skill_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.skill_digest IS 'Digest of the referenced skill content.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.first_publication_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.first_publication_id IS 'Publication that first reserved this immutable alias.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.frozen; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.frozen IS 'Whether the alias is permanently bound to the recorded skill identity and version.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.aggregate_version IS 'Last applied event aggregate version used for optimistic concurrency.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.active IS 'Whether this record is active; false retains its identity for history.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.update_user IS 'Principal responsible for the most recent update.';
+
+
+--
+-- Name: COLUMN skill_publication_alias_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.skill_publication_alias_t.update_ts IS 'Timestamp of the most recent update.';
 
 
 --
@@ -36194,6 +40698,254 @@ COMMENT ON COLUMN public.worklist_t.update_ts IS 'Timestamp when this record was
 
 
 --
+-- Name: a2a_artifact_retention_profile_t a2a_artifact_retention_name_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_artifact_retention_profile_t
+    ADD CONSTRAINT a2a_artifact_retention_name_uk UNIQUE (host_id, profile_name);
+
+
+--
+-- Name: a2a_artifact_retention_profile_t a2a_artifact_retention_profile_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_artifact_retention_profile_t
+    ADD CONSTRAINT a2a_artifact_retention_profile_t_pkey PRIMARY KEY (host_id, retention_profile_id);
+
+
+--
+-- Name: a2a_backend_transport_profile_t a2a_backend_transport_profile_name_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_backend_transport_profile_t
+    ADD CONSTRAINT a2a_backend_transport_profile_name_uk UNIQUE (host_id, environment, profile_name);
+
+
+--
+-- Name: a2a_backend_transport_profile_t a2a_backend_transport_profile_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_backend_transport_profile_t
+    ADD CONSTRAINT a2a_backend_transport_profile_t_pkey PRIMARY KEY (host_id, backend_transport_profile_id);
+
+
+--
+-- Name: a2a_callback_registration_t a2a_callback_registration_name_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_callback_registration_t
+    ADD CONSTRAINT a2a_callback_registration_name_uk UNIQUE (host_id, push_profile_id, registration_name);
+
+
+--
+-- Name: a2a_callback_registration_t a2a_callback_registration_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_callback_registration_t
+    ADD CONSTRAINT a2a_callback_registration_t_pkey PRIMARY KEY (host_id, callback_registration_id);
+
+
+--
+-- Name: a2a_callback_registration_t a2a_callback_registration_url_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_callback_registration_t
+    ADD CONSTRAINT a2a_callback_registration_url_uk UNIQUE (host_id, push_profile_id, callback_url);
+
+
+--
+-- Name: a2a_extended_card_profile_t a2a_extended_card_profile_name_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_extended_card_profile_t
+    ADD CONSTRAINT a2a_extended_card_profile_name_uk UNIQUE (host_id, profile_name);
+
+
+--
+-- Name: a2a_extended_card_profile_t a2a_extended_card_profile_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_extended_card_profile_t
+    ADD CONSTRAINT a2a_extended_card_profile_t_pkey PRIMARY KEY (host_id, extended_card_profile_id);
+
+
+--
+-- Name: a2a_extension_t a2a_extension_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_extension_t
+    ADD CONSTRAINT a2a_extension_t_pkey PRIMARY KEY (host_id, extension_id);
+
+
+--
+-- Name: a2a_extension_t a2a_extension_uri_version_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_extension_t
+    ADD CONSTRAINT a2a_extension_uri_version_uk UNIQUE (host_id, extension_uri, extension_version);
+
+
+--
+-- Name: a2a_provider_profile_t a2a_provider_profile_name_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_provider_profile_t
+    ADD CONSTRAINT a2a_provider_profile_name_uk UNIQUE (host_id, profile_name);
+
+
+--
+-- Name: a2a_provider_profile_t a2a_provider_profile_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_provider_profile_t
+    ADD CONSTRAINT a2a_provider_profile_t_pkey PRIMARY KEY (host_id, provider_profile_id);
+
+
+--
+-- Name: a2a_push_profile_t a2a_push_profile_name_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_push_profile_t
+    ADD CONSTRAINT a2a_push_profile_name_uk UNIQUE (host_id, environment, profile_name);
+
+
+--
+-- Name: a2a_push_profile_t a2a_push_profile_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_push_profile_t
+    ADD CONSTRAINT a2a_push_profile_t_pkey PRIMARY KEY (host_id, push_profile_id);
+
+
+--
+-- Name: a2a_signing_key_t a2a_signing_key_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_signing_key_t
+    ADD CONSTRAINT a2a_signing_key_t_pkey PRIMARY KEY (host_id, signing_profile_id, kid);
+
+
+--
+-- Name: a2a_signing_profile_t a2a_signing_profile_name_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_signing_profile_t
+    ADD CONSTRAINT a2a_signing_profile_name_uk UNIQUE (host_id, environment, profile_name);
+
+
+--
+-- Name: a2a_signing_profile_t a2a_signing_profile_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_signing_profile_t
+    ADD CONSTRAINT a2a_signing_profile_t_pkey PRIMARY KEY (host_id, signing_profile_id);
+
+
+--
+-- Name: access_target_col_filter_t access_target_col_filter_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_col_filter_t
+    ADD CONSTRAINT access_target_col_filter_t_pkey PRIMARY KEY (host_id, access_target_id, filter_id);
+
+
+--
+-- Name: access_target_permission_t access_target_permission_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_permission_t
+    ADD CONSTRAINT access_target_permission_t_pkey PRIMARY KEY (host_id, access_target_id, principal_type, principal_id, principal_value);
+
+
+--
+-- Name: access_target_row_filter_t access_target_row_filter_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_row_filter_t
+    ADD CONSTRAINT access_target_row_filter_t_pkey PRIMARY KEY (host_id, access_target_id, filter_id);
+
+
+--
+-- Name: access_target_rule_t access_target_rule_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_rule_t
+    ADD CONSTRAINT access_target_rule_t_pkey PRIMARY KEY (host_id, access_target_id, rule_id);
+
+
+--
+-- Name: access_target_t access_target_t_host_id_instance_id_target_type_target_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_t
+    ADD CONSTRAINT access_target_t_host_id_instance_id_target_type_target_id_key UNIQUE (host_id, instance_id, target_type, target_id);
+
+
+--
+-- Name: access_target_t access_target_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_t
+    ADD CONSTRAINT access_target_t_pkey PRIMARY KEY (host_id, access_target_id);
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_t_pkey PRIMARY KEY (host_id, a2a_binding_id);
+
+
+--
+-- Name: agent_a2a_instance_publication_t agent_a2a_instance_publication_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_instance_publication_t
+    ADD CONSTRAINT agent_a2a_instance_publication_t_pkey PRIMARY KEY (host_id, instance_publication_id);
+
+
+--
+-- Name: agent_a2a_instance_publication_t agent_a2a_instance_publication_version_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_instance_publication_t
+    ADD CONSTRAINT agent_a2a_instance_publication_version_uk UNIQUE (host_id, publication_id, runtime_instance_id, audience, application_version);
+
+
+--
+-- Name: agent_a2a_public_metadata_t agent_a2a_public_metadata_agent_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_public_metadata_t
+    ADD CONSTRAINT agent_a2a_public_metadata_agent_uk UNIQUE (host_id, agent_def_id);
+
+
+--
+-- Name: agent_a2a_public_metadata_t agent_a2a_public_metadata_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_public_metadata_t
+    ADD CONSTRAINT agent_a2a_public_metadata_t_pkey PRIMARY KEY (host_id, public_metadata_id);
+
+
+--
+-- Name: agent_a2a_publication_t agent_a2a_publication_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_publication_t
+    ADD CONSTRAINT agent_a2a_publication_t_pkey PRIMARY KEY (host_id, publication_id);
+
+
+--
+-- Name: agent_a2a_publication_t agent_a2a_publication_version_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_publication_t
+    ADD CONSTRAINT agent_a2a_publication_version_uk UNIQUE (host_id, a2a_binding_id, publication_version);
+
+
+--
 -- Name: agent_action_attempt_t agent_action_attempt_t_host_id_execution_attempt_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -36327,6 +41079,22 @@ ALTER TABLE ONLY public.agent_edge_runner_binding_t
 
 ALTER TABLE ONLY public.agent_edge_runner_binding_t
     ADD CONSTRAINT agent_edge_runner_binding_t_pkey PRIMARY KEY (host_id, edge_binding_id);
+
+
+--
+-- Name: agent_execution_outbox_t agent_execution_outbox_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_execution_outbox_t
+    ADD CONSTRAINT agent_execution_outbox_t_pkey PRIMARY KEY (host_id, dispatch_id);
+
+
+--
+-- Name: agent_execution_outbox_t agent_execution_outbox_t_request_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_execution_outbox_t
+    ADD CONSTRAINT agent_execution_outbox_t_request_key UNIQUE (host_id, request_id, command_kind);
 
 
 --
@@ -36863,6 +41631,14 @@ ALTER TABLE ONLY public.auth_session_audit_t
 
 ALTER TABLE ONLY public.auth_session_t
     ADD CONSTRAINT auth_session_t_pkey PRIMARY KEY (host_id, session_id);
+
+
+--
+-- Name: bundle_import_t bundle_import_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bundle_import_t
+    ADD CONSTRAINT bundle_import_t_pkey PRIMARY KEY (bundle_id);
 
 
 --
@@ -37786,6 +42562,14 @@ ALTER TABLE ONLY public.llm_alias_route_t
 
 
 --
+-- Name: llm_gateway_delegation_policy_t llm_gateway_delegation_policy_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.llm_gateway_delegation_policy_t
+    ADD CONSTRAINT llm_gateway_delegation_policy_t_pkey PRIMARY KEY (host_id, instance_id);
+
+
+--
 -- Name: llm_gateway_instance_property_ownership_t llm_gateway_instance_property_ownership_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -37810,6 +42594,14 @@ ALTER TABLE ONLY public.llm_gateway_instance_publication_t
 
 
 --
+-- Name: llm_gateway_ownership_release_t llm_gateway_ownership_release_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.llm_gateway_ownership_release_t
+    ADD CONSTRAINT llm_gateway_ownership_release_t_pkey PRIMARY KEY (host_id, ownership_release_id);
+
+
+--
 -- Name: llm_gateway_publication_t llm_gateway_publication_t_host_id_environment_manifest_dige_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -37831,6 +42623,14 @@ ALTER TABLE ONLY public.llm_gateway_publication_t
 
 ALTER TABLE ONLY public.llm_gateway_publication_t
     ADD CONSTRAINT llm_gateway_publication_t_pkey PRIMARY KEY (host_id, environment, gateway_publication_id);
+
+
+--
+-- Name: llm_gateway_security_profile_t llm_gateway_security_profile_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.llm_gateway_security_profile_t
+    ADD CONSTRAINT llm_gateway_security_profile_t_pkey PRIMARY KEY (host_id, security_profile_id);
 
 
 --
@@ -38058,6 +42858,78 @@ ALTER TABLE ONLY public.notification_t
 
 
 --
+-- Name: operational_reference_evidence_t operational_reference_evidence_source_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_reference_evidence_t
+    ADD CONSTRAINT operational_reference_evidence_source_uk UNIQUE (host_id, source_service, source_table, source_record_id, reference_kind);
+
+
+--
+-- Name: operational_reference_evidence_t operational_reference_evidence_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_reference_evidence_t
+    ADD CONSTRAINT operational_reference_evidence_t_pkey PRIMARY KEY (host_id, reference_id);
+
+
+--
+-- Name: operational_reference_reconciliation_t operational_reference_reconciliation_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_reference_reconciliation_t
+    ADD CONSTRAINT operational_reference_reconciliation_t_pkey PRIMARY KEY (host_id, reconciliation_id);
+
+
+--
+-- Name: operational_store_binding_t operational_store_binding_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_binding_t
+    ADD CONSTRAINT operational_store_binding_t_pkey PRIMARY KEY (binding_id);
+
+
+--
+-- Name: operational_store_instance_property_ownership_t operational_store_instance_property_ownership_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_instance_property_ownership_t
+    ADD CONSTRAINT operational_store_instance_property_ownership_t_pkey PRIMARY KEY (host_id, instance_id, property_id);
+
+
+--
+-- Name: operational_store_profile_t operational_store_profile_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_profile_t
+    ADD CONSTRAINT operational_store_profile_t_pkey PRIMARY KEY (profile_id, profile_version);
+
+
+--
+-- Name: operational_store_provisioning_job_t operational_store_provisioning_job_idempotency_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_provisioning_job_t
+    ADD CONSTRAINT operational_store_provisioning_job_idempotency_uk UNIQUE (idempotency_key);
+
+
+--
+-- Name: operational_store_provisioning_job_t operational_store_provisioning_job_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_provisioning_job_t
+    ADD CONSTRAINT operational_store_provisioning_job_t_pkey PRIMARY KEY (job_id);
+
+
+--
+-- Name: operational_store_publication_t operational_store_publication_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_publication_t
+    ADD CONSTRAINT operational_store_publication_t_pkey PRIMARY KEY (binding_id, binding_version);
+
+
+--
 -- Name: org_t org_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -38282,6 +43154,30 @@ ALTER TABLE ONLY public.product_version_t
 
 
 --
+-- Name: promotion_item_t promotion_item_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_item_t
+    ADD CONSTRAINT promotion_item_t_pkey PRIMARY KEY (promotion_id, item_id);
+
+
+--
+-- Name: promotion_recovery_t promotion_recovery_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_recovery_t
+    ADD CONSTRAINT promotion_recovery_t_pkey PRIMARY KEY (recovery_id);
+
+
+--
+-- Name: promotion_t promotion_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_t
+    ADD CONSTRAINT promotion_t_pkey PRIMARY KEY (promotion_id);
+
+
+--
 -- Name: ref_table_t ref_table_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -38434,6 +43330,14 @@ ALTER TABLE ONLY public.runtime_instance_t
 
 
 --
+-- Name: runtime_operational_scope_t runtime_operational_scope_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.runtime_operational_scope_t
+    ADD CONSTRAINT runtime_operational_scope_t_pkey PRIMARY KEY (host_id, service_id, instance_id);
+
+
+--
 -- Name: schedule_t schedule_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -38495,6 +43399,22 @@ ALTER TABLE ONLY public.skill_package_t
 
 ALTER TABLE ONLY public.skill_package_t
     ADD CONSTRAINT skill_package_t_pkey PRIMARY KEY (host_id, package_id);
+
+
+--
+-- Name: skill_publication_alias_t skill_publication_alias_skill_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skill_publication_alias_t
+    ADD CONSTRAINT skill_publication_alias_skill_uk UNIQUE (host_id, skill_id);
+
+
+--
+-- Name: skill_publication_alias_t skill_publication_alias_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skill_publication_alias_t
+    ADD CONSTRAINT skill_publication_alias_t_pkey PRIMARY KEY (host_id, publication_alias);
 
 
 --
@@ -39026,6 +43946,62 @@ ALTER TABLE ONLY public.worklist_t
 
 
 --
+-- Name: a2a_signing_key_current_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX a2a_signing_key_current_uk ON public.a2a_signing_key_t USING btree (host_id, signing_profile_id) WHERE (active AND ((key_state)::text = 'CURRENT'::text));
+
+
+--
+-- Name: a2a_signing_profile_default_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX a2a_signing_profile_default_uk ON public.a2a_signing_profile_t USING btree (host_id, environment, purpose) WHERE (active AND is_default);
+
+
+--
+-- Name: access_target_api_identity_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX access_target_api_identity_uk ON public.access_target_t USING btree (host_id, target_type, target_id) WHERE (((target_type)::text = 'API_ENDPOINT'::text) AND (instance_id IS NULL));
+
+
+--
+-- Name: access_target_endpoint_key_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX access_target_endpoint_key_uk ON public.access_target_t USING btree (host_id, instance_id, endpoint_key) WHERE (active AND (instance_id IS NOT NULL) AND (endpoint_key IS NOT NULL));
+
+
+--
+-- Name: agent_a2a_binding_path_active_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX agent_a2a_binding_path_active_uk ON public.agent_a2a_binding_t USING btree (host_id, environment, public_path) WHERE active;
+
+
+--
+-- Name: agent_a2a_binding_ref_active_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX agent_a2a_binding_ref_active_uk ON public.agent_a2a_binding_t USING btree (host_id, environment, agent_ref) WHERE active;
+
+
+--
+-- Name: agent_a2a_instance_publication_active_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX agent_a2a_instance_publication_active_uk ON public.agent_a2a_instance_publication_t USING btree (host_id, publication_id, runtime_instance_id, audience) WHERE (active AND ((application_state)::text = ANY ((ARRAY['ACTIVE'::character varying, 'ACKNOWLEDGED'::character varying])::text[])));
+
+
+--
+-- Name: agent_a2a_publication_active_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX agent_a2a_publication_active_uk ON public.agent_a2a_publication_t USING btree (host_id, a2a_binding_id) WHERE (active AND ((publication_state)::text = 'ACTIVE'::text));
+
+
+--
 -- Name: agent_action_pending_result_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -39107,6 +44083,13 @@ CREATE INDEX agent_edge_runner_action_policy_idx ON public.agent_edge_runner_bin
 --
 
 CREATE INDEX agent_event_projection_idx ON public.agent_session_event_t USING btree (host_id, session_id, event_sequence);
+
+
+--
+-- Name: agent_execution_outbox_pending_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_execution_outbox_pending_idx ON public.agent_execution_outbox_t USING btree (next_attempt_ts, created_ts) WHERE ((state)::text = 'PENDING'::text);
 
 
 --
@@ -40748,6 +45731,13 @@ CREATE INDEX idx_wf_definition_owner_user ON public.wf_definition_t USING btree 
 
 
 --
+-- Name: instance_api_agent_runtime_identity_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX instance_api_agent_runtime_identity_uk ON public.instance_api_t USING btree (host_id, instance_api_id, instance_id, api_version_id);
+
+
+--
 -- Name: instance_clone_request_status_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -40902,6 +45892,13 @@ CREATE INDEX llm_gateway_instance_publication_history_idx ON public.llm_gateway_
 
 
 --
+-- Name: llm_gateway_security_profile_active_environment_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX llm_gateway_security_profile_active_environment_idx ON public.llm_gateway_security_profile_t USING btree (host_id, environment) WHERE (active IS TRUE);
+
+
+--
 -- Name: llm_policy_binding_agent_default_uk; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -40958,6 +45955,69 @@ CREATE INDEX message_idx ON public.message_t USING btree (to_email, send_time);
 
 
 --
+-- Name: operational_reference_evidence_reconcile_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX operational_reference_evidence_reconcile_idx ON public.operational_reference_evidence_t USING btree (host_id, state, reconciled_ts);
+
+
+--
+-- Name: operational_reference_reconciliation_lookup_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX operational_reference_reconciliation_lookup_idx ON public.operational_reference_reconciliation_t USING btree (host_id, reference_id, checked_ts DESC);
+
+
+--
+-- Name: operational_store_binding_active_host_v2_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX operational_store_binding_active_host_v2_uk ON public.operational_store_binding_t USING btree (host_id) WHERE ((contract_version = 2) AND active AND ((lifecycle_state)::text <> 'UNREGISTERED'::text));
+
+
+--
+-- Name: operational_store_binding_active_scope_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX operational_store_binding_active_scope_uk ON public.operational_store_binding_t USING btree (host_id, environment) WHERE (active AND ((lifecycle_state)::text <> 'DECOMMISSIONED'::text));
+
+
+--
+-- Name: operational_store_binding_state_ix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX operational_store_binding_state_ix ON public.operational_store_binding_t USING btree (lifecycle_state, update_ts);
+
+
+--
+-- Name: operational_store_instance_property_ownership_binding_ix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX operational_store_instance_property_ownership_binding_ix ON public.operational_store_instance_property_ownership_t USING btree (binding_id, active);
+
+
+--
+-- Name: operational_store_profile_active_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX operational_store_profile_active_uk ON public.operational_store_profile_t USING btree (profile_id) WHERE active;
+
+
+--
+-- Name: operational_store_provisioning_job_claim_ix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX operational_store_provisioning_job_claim_ix ON public.operational_store_provisioning_job_t USING btree (job_state, next_attempt_ts, created_ts);
+
+
+--
+-- Name: operational_store_publication_active_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX operational_store_publication_active_uk ON public.operational_store_publication_t USING btree (binding_id) WHERE ((publication_state)::text = 'ACTIVE'::text);
+
+
+--
 -- Name: pii_token_vault_expiry_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -40976,6 +46036,41 @@ CREATE UNIQUE INDEX pii_token_vault_value_uk ON public.pii_token_vault_t USING b
 --
 
 CREATE UNIQUE INDEX process_info_source_event_uk ON public.process_info_t USING btree (host_id, wf_def_id, source_event_id) WHERE (source_event_id IS NOT NULL);
+
+
+--
+-- Name: promotion_item_t_entity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX promotion_item_t_entity_idx ON public.promotion_item_t USING btree (promotion_id, entity_type, entity_id);
+
+
+--
+-- Name: promotion_recovery_t_promotion_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX promotion_recovery_t_promotion_idx ON public.promotion_recovery_t USING btree (promotion_id, created_ts DESC);
+
+
+--
+-- Name: promotion_t_projection_pending_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX promotion_t_projection_pending_idx ON public.promotion_t USING btree (projection_status, projection_deadline_ts) WHERE ((projection_status)::text = 'PENDING'::text);
+
+
+--
+-- Name: promotion_t_source_host_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX promotion_t_source_host_idx ON public.promotion_t USING btree (source_host_id, update_ts DESC);
+
+
+--
+-- Name: promotion_t_target_host_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX promotion_t_target_host_idx ON public.promotion_t USING btree (target_host_id, update_ts DESC);
 
 
 --
@@ -41420,6 +46515,20 @@ CREATE TRIGGER knowledge_source_acl_mode_fence_trg BEFORE UPDATE OF acl_mode ON 
 
 
 --
+-- Name: llm_provider_deployment_t llm_deployment_endpoint_policy_check; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER llm_deployment_endpoint_policy_check BEFORE INSERT OR UPDATE OF provider_endpoint_id, bedrock_policy, active ON public.llm_provider_deployment_t FOR EACH ROW EXECUTE FUNCTION public.validate_llm_deployment_endpoint_policy();
+
+
+--
+-- Name: llm_provider_endpoint_t llm_endpoint_deployment_policy_check; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER llm_endpoint_deployment_policy_check BEFORE UPDATE OF provider_protocol ON public.llm_provider_endpoint_t FOR EACH ROW EXECUTE FUNCTION public.validate_llm_deployment_endpoint_policy();
+
+
+--
 -- Name: llm_gateway_publication_t llm_gateway_publication_immutable_trg; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -41438,6 +46547,34 @@ CREATE TRIGGER llm_projection_resource_immutable_trg BEFORE UPDATE ON public.llm
 --
 
 CREATE TRIGGER llm_public_alias_embedding_space_immutable_trg BEFORE UPDATE ON public.llm_public_alias_t FOR EACH ROW EXECUTE FUNCTION public.enforce_llm_public_alias_embedding_space_immutable();
+
+
+--
+-- Name: operational_store_provisioning_job_t operational_store_decommission_guard_trg; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER operational_store_decommission_guard_trg BEFORE INSERT OR UPDATE OF operation_kind, binding_id ON public.operational_store_provisioning_job_t FOR EACH ROW EXECUTE FUNCTION public.operational_store_decommission_guard();
+
+
+--
+-- Name: operational_store_provisioning_job_t operational_store_legacy_job_write_guard_trg; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER operational_store_legacy_job_write_guard_trg BEFORE INSERT OR DELETE OR UPDATE ON public.operational_store_provisioning_job_t FOR EACH ROW EXECUTE FUNCTION public.operational_store_legacy_write_guard();
+
+
+--
+-- Name: operational_store_profile_t operational_store_legacy_profile_write_guard_trg; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER operational_store_legacy_profile_write_guard_trg BEFORE INSERT OR DELETE OR UPDATE ON public.operational_store_profile_t FOR EACH ROW EXECUTE FUNCTION public.operational_store_legacy_write_guard();
+
+
+--
+-- Name: operational_store_publication_t operational_store_publication_guard_trg; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER operational_store_publication_guard_trg BEFORE INSERT OR UPDATE ON public.operational_store_publication_t FOR EACH ROW EXECUTE FUNCTION public.operational_store_publication_guard();
 
 
 --
@@ -41637,6 +46774,13 @@ CREATE TRIGGER trg_cascade_soft_ops AFTER UPDATE OF active ON public.instance_t 
 
 
 --
+-- Name: llm_gateway_security_profile_t trg_cascade_soft_ops; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_cascade_soft_ops AFTER UPDATE OF active ON public.llm_gateway_security_profile_t FOR EACH ROW EXECUTE FUNCTION public.smart_cascade_delete();
+
+
+--
 -- Name: org_t trg_cascade_soft_ops; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -41802,6 +46946,230 @@ CREATE TRIGGER workflow_quarantined_outbox_retention_v1_trg BEFORE DELETE ON pub
 --
 
 CREATE TRIGGER workflow_task_ready_v1_trg AFTER INSERT OR UPDATE OF status_code, completed_ts, task_output ON public.task_info_t FOR EACH ROW EXECUTE FUNCTION public.notify_workflow_task_ready_v1();
+
+
+--
+-- Name: a2a_artifact_retention_profile_t a2a_artifact_retention_host_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_artifact_retention_profile_t
+    ADD CONSTRAINT a2a_artifact_retention_host_fk FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE;
+
+
+--
+-- Name: a2a_backend_transport_profile_t a2a_backend_transport_profile_host_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_backend_transport_profile_t
+    ADD CONSTRAINT a2a_backend_transport_profile_host_fk FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE;
+
+
+--
+-- Name: a2a_callback_registration_t a2a_callback_registration_profile_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_callback_registration_t
+    ADD CONSTRAINT a2a_callback_registration_profile_fk FOREIGN KEY (host_id, push_profile_id) REFERENCES public.a2a_push_profile_t(host_id, push_profile_id) ON DELETE CASCADE;
+
+
+--
+-- Name: a2a_extended_card_profile_t a2a_extended_card_profile_host_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_extended_card_profile_t
+    ADD CONSTRAINT a2a_extended_card_profile_host_fk FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE;
+
+
+--
+-- Name: a2a_extension_t a2a_extension_host_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_extension_t
+    ADD CONSTRAINT a2a_extension_host_fk FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE;
+
+
+--
+-- Name: a2a_provider_profile_t a2a_provider_profile_host_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_provider_profile_t
+    ADD CONSTRAINT a2a_provider_profile_host_fk FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE;
+
+
+--
+-- Name: a2a_push_profile_t a2a_push_profile_host_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_push_profile_t
+    ADD CONSTRAINT a2a_push_profile_host_fk FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE;
+
+
+--
+-- Name: a2a_signing_key_t a2a_signing_key_profile_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_signing_key_t
+    ADD CONSTRAINT a2a_signing_key_profile_fk FOREIGN KEY (host_id, signing_profile_id) REFERENCES public.a2a_signing_profile_t(host_id, signing_profile_id) ON DELETE CASCADE;
+
+
+--
+-- Name: a2a_signing_profile_t a2a_signing_profile_host_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.a2a_signing_profile_t
+    ADD CONSTRAINT a2a_signing_profile_host_fk FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE;
+
+
+--
+-- Name: access_target_col_filter_t access_target_col_filter_t_host_id_access_target_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_col_filter_t
+    ADD CONSTRAINT access_target_col_filter_t_host_id_access_target_id_fkey FOREIGN KEY (host_id, access_target_id) REFERENCES public.access_target_t(host_id, access_target_id);
+
+
+--
+-- Name: access_target_permission_t access_target_permission_t_host_id_access_target_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_permission_t
+    ADD CONSTRAINT access_target_permission_t_host_id_access_target_id_fkey FOREIGN KEY (host_id, access_target_id) REFERENCES public.access_target_t(host_id, access_target_id);
+
+
+--
+-- Name: access_target_row_filter_t access_target_row_filter_t_host_id_access_target_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_row_filter_t
+    ADD CONSTRAINT access_target_row_filter_t_host_id_access_target_id_fkey FOREIGN KEY (host_id, access_target_id) REFERENCES public.access_target_t(host_id, access_target_id);
+
+
+--
+-- Name: access_target_rule_t access_target_rule_t_host_id_access_target_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_rule_t
+    ADD CONSTRAINT access_target_rule_t_host_id_access_target_id_fkey FOREIGN KEY (host_id, access_target_id) REFERENCES public.access_target_t(host_id, access_target_id);
+
+
+--
+-- Name: access_target_t access_target_t_host_id_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.access_target_t
+    ADD CONSTRAINT access_target_t_host_id_instance_id_fkey FOREIGN KEY (host_id, instance_id) REFERENCES public.instance_t(host_id, instance_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_agent_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_agent_fk FOREIGN KEY (host_id, agent_def_id) REFERENCES public.agent_definition_t(host_id, agent_def_id) ON DELETE CASCADE;
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_backend_transport_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_backend_transport_fk FOREIGN KEY (host_id, backend_transport_profile_id) REFERENCES public.a2a_backend_transport_profile_t(host_id, backend_transport_profile_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_extended_card_profile_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_extended_card_profile_fk FOREIGN KEY (host_id, extended_card_profile_id) REFERENCES public.a2a_extended_card_profile_t(host_id, extended_card_profile_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_instance_agent_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_instance_agent_fk FOREIGN KEY (host_id, instance_api_id, runtime_instance_id, agent_def_id) REFERENCES public.instance_api_t(host_id, instance_api_id, instance_id, api_version_id) ON DELETE CASCADE;
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_public_metadata_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_public_metadata_fk FOREIGN KEY (host_id, public_metadata_id) REFERENCES public.agent_a2a_public_metadata_t(host_id, public_metadata_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_push_profile_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_push_profile_fk FOREIGN KEY (host_id, push_profile_id) REFERENCES public.a2a_push_profile_t(host_id, push_profile_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_retention_profile_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_retention_profile_fk FOREIGN KEY (host_id, retention_profile_id) REFERENCES public.a2a_artifact_retention_profile_t(host_id, retention_profile_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_signing_profile_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_signing_profile_fk FOREIGN KEY (host_id, signing_profile_id) REFERENCES public.a2a_signing_profile_t(host_id, signing_profile_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: agent_a2a_instance_publication_t agent_a2a_instance_publication_publication_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_instance_publication_t
+    ADD CONSTRAINT agent_a2a_instance_publication_publication_fk FOREIGN KEY (host_id, publication_id) REFERENCES public.agent_a2a_publication_t(host_id, publication_id) ON DELETE CASCADE;
+
+
+--
+-- Name: agent_a2a_instance_publication_t agent_a2a_instance_publication_rollback_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_instance_publication_t
+    ADD CONSTRAINT agent_a2a_instance_publication_rollback_fk FOREIGN KEY (host_id, rollback_of_instance_publication_id) REFERENCES public.agent_a2a_instance_publication_t(host_id, instance_publication_id) ON DELETE SET NULL;
+
+
+--
+-- Name: agent_a2a_instance_publication_t agent_a2a_instance_publication_runtime_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_instance_publication_t
+    ADD CONSTRAINT agent_a2a_instance_publication_runtime_fk FOREIGN KEY (host_id, runtime_instance_id) REFERENCES public.instance_t(host_id, instance_id) ON DELETE CASCADE;
+
+
+--
+-- Name: agent_a2a_public_metadata_t agent_a2a_public_metadata_agent_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_public_metadata_t
+    ADD CONSTRAINT agent_a2a_public_metadata_agent_fk FOREIGN KEY (host_id, agent_def_id) REFERENCES public.agent_definition_t(host_id, agent_def_id) ON DELETE CASCADE;
+
+
+--
+-- Name: agent_a2a_public_metadata_t agent_a2a_public_metadata_provider_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_public_metadata_t
+    ADD CONSTRAINT agent_a2a_public_metadata_provider_fk FOREIGN KEY (host_id, provider_profile_id) REFERENCES public.a2a_provider_profile_t(host_id, provider_profile_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: agent_a2a_publication_t agent_a2a_publication_binding_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_publication_t
+    ADD CONSTRAINT agent_a2a_publication_binding_fk FOREIGN KEY (host_id, a2a_binding_id) REFERENCES public.agent_a2a_binding_t(host_id, a2a_binding_id) ON DELETE CASCADE;
 
 
 --
@@ -42197,14 +47565,6 @@ ALTER TABLE ONLY public.agent_turn_t
 
 
 --
--- Name: access_target_t access_target_t_host_id_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.access_target_t
-    ADD CONSTRAINT access_target_t_host_id_instance_id_fkey FOREIGN KEY (host_id, instance_id) REFERENCES public.instance_t(host_id, instance_id) ON DELETE RESTRICT;
-
-
---
 -- Name: api_endpoint_t api_endpoint_t_host_id_api_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -42546,6 +47906,14 @@ ALTER TABLE ONLY public.auth_session_t
 
 ALTER TABLE ONLY public.auth_session_t
     ADD CONSTRAINT auth_session_t_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.user_t(user_id) ON DELETE CASCADE;
+
+
+--
+-- Name: bundle_import_t bundle_import_baseline_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.bundle_import_t
+    ADD CONSTRAINT bundle_import_baseline_fk FOREIGN KEY (required_baseline_bundle_id) REFERENCES public.bundle_import_t(bundle_id);
 
 
 --
@@ -43525,6 +48893,22 @@ ALTER TABLE ONLY public.llm_alias_route_t
 
 
 --
+-- Name: llm_gateway_delegation_policy_t llm_gateway_delegation_policy_t_instance_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.llm_gateway_delegation_policy_t
+    ADD CONSTRAINT llm_gateway_delegation_policy_t_instance_fkey FOREIGN KEY (host_id, instance_id) REFERENCES public.instance_t(host_id, instance_id);
+
+
+--
+-- Name: llm_gateway_delegation_policy_t llm_gateway_delegation_policy_t_profile_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.llm_gateway_delegation_policy_t
+    ADD CONSTRAINT llm_gateway_delegation_policy_t_profile_fkey FOREIGN KEY (host_id, security_profile_id) REFERENCES public.llm_gateway_security_profile_t(host_id, security_profile_id);
+
+
+--
 -- Name: llm_gateway_instance_property_ownership_t llm_gateway_instance_property_host_id_instance_publication_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -43573,6 +48957,14 @@ ALTER TABLE ONLY public.llm_gateway_instance_publication_t
 
 
 --
+-- Name: llm_gateway_ownership_release_t llm_gateway_ownership_release_t_instance_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.llm_gateway_ownership_release_t
+    ADD CONSTRAINT llm_gateway_ownership_release_t_instance_fkey FOREIGN KEY (host_id, instance_id) REFERENCES public.instance_t(host_id, instance_id);
+
+
+--
 -- Name: llm_gateway_publication_t llm_gateway_publication_t_host_id_environment_rollback_of__fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -43586,6 +48978,14 @@ ALTER TABLE ONLY public.llm_gateway_publication_t
 
 ALTER TABLE ONLY public.llm_gateway_publication_t
     ADD CONSTRAINT llm_gateway_publication_t_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE;
+
+
+--
+-- Name: llm_gateway_security_profile_t llm_gateway_security_profile_t_host_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.llm_gateway_security_profile_t
+    ADD CONSTRAINT llm_gateway_security_profile_t_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.host_t(host_id);
 
 
 --
@@ -43754,6 +49154,38 @@ ALTER TABLE ONLY public.message_t
 
 ALTER TABLE ONLY public.notification_t
     ADD CONSTRAINT notification_t_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE;
+
+
+--
+-- Name: operational_store_binding_t operational_store_binding_profile_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_binding_t
+    ADD CONSTRAINT operational_store_binding_profile_fk FOREIGN KEY (profile_id, profile_version) REFERENCES public.operational_store_profile_t(profile_id, profile_version);
+
+
+--
+-- Name: operational_store_instance_property_ownership_t operational_store_instance_property_ownership_binding_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_instance_property_ownership_t
+    ADD CONSTRAINT operational_store_instance_property_ownership_binding_fk FOREIGN KEY (binding_id) REFERENCES public.operational_store_binding_t(binding_id);
+
+
+--
+-- Name: operational_store_provisioning_job_t operational_store_provisioning_job_binding_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_provisioning_job_t
+    ADD CONSTRAINT operational_store_provisioning_job_binding_fk FOREIGN KEY (binding_id) REFERENCES public.operational_store_binding_t(binding_id);
+
+
+--
+-- Name: operational_store_publication_t operational_store_publication_binding_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.operational_store_publication_t
+    ADD CONSTRAINT operational_store_publication_binding_fk FOREIGN KEY (binding_id) REFERENCES public.operational_store_binding_t(binding_id);
 
 
 --
@@ -43965,6 +49397,30 @@ ALTER TABLE ONLY public.product_version_property_t
 
 
 --
+-- Name: promotion_item_t promotion_item_t_promotion_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_item_t
+    ADD CONSTRAINT promotion_item_t_promotion_fk FOREIGN KEY (promotion_id) REFERENCES public.promotion_t(promotion_id) ON DELETE CASCADE;
+
+
+--
+-- Name: promotion_recovery_t promotion_recovery_t_promotion_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_recovery_t
+    ADD CONSTRAINT promotion_recovery_t_promotion_fk FOREIGN KEY (promotion_id) REFERENCES public.promotion_t(promotion_id) ON DELETE CASCADE;
+
+
+--
+-- Name: promotion_t promotion_t_supersedes_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.promotion_t
+    ADD CONSTRAINT promotion_t_supersedes_fk FOREIGN KEY (supersedes_promotion_id) REFERENCES public.promotion_t(promotion_id);
+
+
+--
 -- Name: ref_value_t ref_value_t_table_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -44130,6 +49586,14 @@ ALTER TABLE ONLY public.skill_package_proposal_t
 
 ALTER TABLE ONLY public.skill_package_t
     ADD CONSTRAINT skill_package_t_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.host_t(host_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: skill_publication_alias_t skill_publication_alias_skill_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skill_publication_alias_t
+    ADD CONSTRAINT skill_publication_alias_skill_fk FOREIGN KEY (host_id, skill_id) REFERENCES public.skill_t(host_id, skill_id) ON DELETE RESTRICT;
 
 
 --
@@ -44672,1164 +50136,963 @@ ALTER TABLE ONLY public.worklist_column_t
 -- PostgreSQL database dump complete
 --
 
-INSERT INTO public.scheduler_lock_t (lock_id, instance_id, last_heartbeat)
-VALUES (1, 'none', CURRENT_TIMESTAMP)
-ON CONFLICT (lock_id) DO NOTHING;
-
-INSERT INTO public.log_counter (id, next_offset)
-VALUES (1, 1)
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description)
-VALUES
-    (0, 'UUID', 'UUID Version 4 token.'),
-    (1, 'GUID', 'URL-safe base64 UUID token.'),
-    (2, 'LN', 'Luhn-compliant numeric token.'),
-    (3, 'N', 'Random numeric token, length preserving.'),
-    (4, 'LN4', 'Luhn-compliant numeric token retaining the original last four digits.'),
-    (5, 'AN', 'Alpha-numeric token, length preserving.'),
-    (6, 'AN4', 'Alpha-numeric token retaining the original last four characters.'),
-    (7, 'CC', 'Credit-card-shaped Luhn token retaining the original first digit.'),
-    (8, 'CC4', 'Credit-card-shaped Luhn token retaining the original first and last four digits.')
-ON CONFLICT (scheme_id) DO NOTHING;
-
+-- Schema-owned seeds. Generated from schema/base.sql and schema/policies.sql.
+SET search_path = public;
+INSERT INTO public.scheduler_lock_t (lock_id, instance_id, last_heartbeat) VALUES
+    (1, 'none', CURRENT_TIMESTAMP) ON CONFLICT (lock_id) DO NOTHING;
+INSERT INTO public.log_counter (id, next_offset) VALUES
+    (1, 1) ON CONFLICT (id) DO NOTHING;
+INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description, active, update_ts, update_user) VALUES
+    (0, 'UUID', 'UUID Version 4 token.', true, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (scheme_id) DO NOTHING;
+INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description, active, update_ts, update_user) VALUES
+    (1, 'GUID', 'URL-safe base64 UUID token.', true, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (scheme_id) DO NOTHING;
+INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description, active, update_ts, update_user) VALUES
+    (2, 'LN', 'Luhn-compliant numeric token.', true, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (scheme_id) DO NOTHING;
+INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description, active, update_ts, update_user) VALUES
+    (3, 'N', 'Random numeric token, length preserving.', true, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (scheme_id) DO NOTHING;
+INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description, active, update_ts, update_user) VALUES
+    (4, 'LN4', 'Luhn-compliant numeric token retaining the original last four digits.', true, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (scheme_id) DO NOTHING;
+INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description, active, update_ts, update_user) VALUES
+    (5, 'AN', 'Alpha-numeric token, length preserving.', true, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (scheme_id) DO NOTHING;
+INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description, active, update_ts, update_user) VALUES
+    (6, 'AN4', 'Alpha-numeric token retaining the original last four characters.', true, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (scheme_id) DO NOTHING;
+INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description, active, update_ts, update_user) VALUES
+    (7, 'CC', 'Credit-card-shaped Luhn token retaining the original first digit.', true, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (scheme_id) DO NOTHING;
+INSERT INTO public.pii_token_scheme_t (scheme_id, scheme_code, description, active, update_ts, update_user) VALUES
+    (8, 'CC4', 'Credit-card-shaped Luhn token retaining the original first and last four digits.', true, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (scheme_id) DO NOTHING;
 BEGIN;
-CREATE TEMP TABLE cascade_relationship_policy_seed_t
-(LIKE public.cascade_relationship_policy_t INCLUDING DEFAULTS INCLUDING CONSTRAINTS)
-ON COMMIT DROP;
-
-INSERT INTO cascade_relationship_policy_seed_t (
-    parent_schema,
-    parent_table,
-    child_schema,
-    child_table,
-    constraint_name,
-    delete_action,
-    restore_action,
-    policy_description
-)
-VALUES
-('public', 'access_target_t', 'public', 'access_target_col_filter_t', 'access_target_col_filter_t_host_id_access_target_id_fkey', 'IGNORE', 'NONE', 'Access-target column-filter lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'access_target_t', 'public', 'access_target_permission_t', 'access_target_permission_t_host_id_access_target_id_fkey', 'IGNORE', 'NONE', 'Access-target permission lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'access_target_t', 'public', 'access_target_row_filter_t', 'access_target_row_filter_t_host_id_access_target_id_fkey', 'IGNORE', 'NONE', 'Access-target row-filter lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'access_target_t', 'public', 'access_target_rule_t', 'access_target_rule_t_host_id_access_target_id_fkey', 'IGNORE', 'NONE', 'Access-target rule lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'api_endpoint_scope_t', 'public', 'app_api_t', 'app_api_t_host_id_endpoint_id_scope_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'api_endpoint_rule_t', 'endpoint_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'api_endpoint_scope_t', 'api_ver_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'attribute_col_filter_t', 'attribute_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'attribute_permission_t', 'attribute_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'attribute_row_filter_t', 'attribute_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'gateway_tool_binding_t', 'gateway_tool_binding_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'group_col_filter_t', 'group_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'group_permission_t', 'group_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'group_row_filter_t', 'group_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'position_col_filter_t', 'position_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'position_permission_t', 'position_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'position_row_filter_t', 'position_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'role_col_filter_t', 'role_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'role_permission_t', 'role_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'role_row_filter_t', 'role_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'user_col_filter_t', 'user_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'user_permission_t', 'user_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'user_row_filter_t', 'user_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_endpoint_t', 'public', 'tool_t', 'tool_t_host_id_endpoint_id_fkey', 'IGNORE', 'NONE', 'Tool lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'api_t', 'public', 'api_version_t', 'api_version_t_host_id_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_t', 'public', 'auth_provider_api_t', 'auth_provider_api_t_host_id_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_version_t', 'public', 'api_endpoint_t', 'api_endpoint_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_version_t', 'public', 'agent_definition_t', 'agent_definition_api_version_fk', 'IGNORE', 'NONE', 'Agent definition lifecycle is command-owned and independently audited'),
-    ('public', 'api_version_t', 'public', 'auth_client_owner_t', 'auth_client_owner_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_version_t', 'public', 'auth_client_t', 'auth_client_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_version_t', 'public', 'gateway_tool_binding_t', 'gateway_tool_binding_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'api_version_t', 'public', 'gateway_tool_publication_t', 'gateway_tool_publication_t_host_id_scope_api_version_id_fkey', 'IGNORE', 'NONE', 'Publication lifecycle is immutable and command-owned'),
-    ('public', 'api_version_t', 'public', 'instance_api_t', 'instance_api_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'app_t', 'public', 'app_api_t', 'app_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'app_t', 'public', 'auth_client_owner_t', 'auth_client_owner_t_host_id_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'app_t', 'public', 'auth_client_t', 'auth_client_t_host_id_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'app_t', 'public', 'instance_app_t', 'instance_app_t_host_id_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'attribute_t', 'public', 'attribute_col_filter_t', 'attribute_col_filter_t_host_id_attribute_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'attribute_t', 'public', 'attribute_permission_t', 'attribute_permission_t_host_id_attribute_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'attribute_t', 'public', 'attribute_row_filter_t', 'attribute_row_filter_t_host_id_attribute_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'attribute_t', 'public', 'attribute_user_t', 'attribute_user_t_host_id_attribute_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'auth_client_owner_t', 'public', 'auth_client_t', 'auth_client_t_host_id_owner_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'auth_client_t', 'public', 'auth_client_token_t', 'auth_client_token_t_host_id_client_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable authentication runtime state'),
-    ('public', 'auth_client_t', 'public', 'auth_provider_client_t', 'auth_provider_client_t_host_id_client_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'auth_client_t', 'public', 'auth_ref_token_t', 'auth_ref_token_t_host_id_client_id_fkey', 'HARD_DELETE', 'NONE', 'Client deactivation revokes stored bearer JWT reference tokens'),
-    ('public', 'auth_provider_client_t', 'public', 'auth_code_t', 'auth_code_t_auth_host_id_client_id_provider_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable authentication runtime state'),
-    ('public', 'auth_provider_client_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_auth_host_id_client_id_provider_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable authentication runtime state'),
-    ('public', 'auth_provider_client_t', 'public', 'auth_session_t', 'auth_session_t_auth_host_id_client_id_provider_id_fkey', 'HARD_DELETE', 'NONE', 'Provider-client retirement revokes non-restorable authorization sessions'),
-    ('public', 'auth_provider_t', 'public', 'auth_provider_api_t', 'auth_provider_api_t_host_id_provider_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'auth_provider_t', 'public', 'auth_provider_client_t', 'auth_provider_client_t_host_id_provider_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'auth_provider_t', 'public', 'auth_provider_key_t', 'auth_provider_key_t_host_id_provider_id_fkey', 'IGNORE', 'NONE', 'Preserve keys across parent-driven provider retirement; runtime requires an active provider'),
-    ('public', 'category_t', 'public', 'category_t', 'category_t_parent_category_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'category_t', 'public', 'entity_category_t', 'entity_category_t_category_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_profile_t', 'public', 'config_profile_config_t', 'config_profile_config_t_profile_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_profile_t', 'public', 'config_profile_property_t', 'config_profile_property_t_profile_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_profile_t', 'public', 'product_version_config_profile_t', 'product_version_config_profile_t_profile_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'config_profile_property_t', 'config_profile_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'deployment_instance_property_t', 'deployment_instance_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'environment_property_t', 'environment_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'gateway_tool_publication_t', 'gateway_tool_publication_t_property_id_fkey', 'IGNORE', 'NONE', 'Publication lifecycle is immutable and command-owned'),
-    ('public', 'config_property_t', 'public', 'instance_api_property_t', 'instance_api_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'instance_app_api_property_t', 'config_property_fk1', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'instance_app_property_t', 'instance_app_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'instance_property_t', 'config_property_fkv1', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'llm_gateway_instance_property_ownership_t', 'llm_gateway_instance_property_ownership_t_property_id_fkey', 'IGNORE', 'NONE', 'Ownership lifecycle is release-managed and lacks the soft-delete audit contract'),
-    ('public', 'config_property_t', 'public', 'product_property_t', 'config_property_fkv2', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'product_version_config_property_t', 'product_version_config_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_property_t', 'public', 'product_version_property_t', 'product_version_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_t', 'public', 'chain_handler_t', 'configuration_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_t', 'public', 'config_profile_config_t', 'config_profile_config_t_config_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_t', 'public', 'config_property_t', 'config_fkv2', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'config_t', 'public', 'product_version_config_t', 'product_version_config_t_config_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'customer_t', 'public', 'customer_t', 'customer_t_host_id_referral_id_fkey', 'IGNORE', 'NONE', 'Referral topology does not own customer identity lifecycle'),
-    ('public', 'deployment_instance_t', 'public', 'deployment_instance_property_t', 'deployment_instance_property__host_id_deployment_instance__fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'deployment_instance_t', 'public', 'deployment_t', 'deployment_t_host_id_deployment_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'deployment_t', 'public', 'config_snapshot_t', 'config_snapshot_t_host_id_deployment_id_fkey', 'IGNORE', 'NONE', 'Immutable configuration snapshots are retained independently'),
-    ('public', 'employee_t', 'public', 'employee_t', 'employee_t_host_id_manager_id_fkey', 'IGNORE', 'NONE', 'Management topology does not own employee identity lifecycle'),
-    ('public', 'group_t', 'public', 'group_col_filter_t', 'group_col_filter_t_host_id_group_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'group_t', 'public', 'group_permission_t', 'group_permission_t_host_id_group_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'group_t', 'public', 'group_row_filter_t', 'group_row_filter_t_host_id_group_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'group_t', 'public', 'group_user_t', 'group_user_t_host_id_group_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'host_t', 'public', 'auth_client_owner_t', 'auth_client_owner_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'host_t', 'public', 'auth_client_t', 'auth_client_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'host_t', 'public', 'auth_code_t', 'auth_code_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes authorization codes even when auth_host_id differs'),
-    ('public', 'host_t', 'public', 'auth_provider_t', 'auth_provider_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'host_t', 'public', 'auth_ref_token_t', 'auth_ref_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Host deactivation revokes stored bearer JWT reference tokens'),
-    ('public', 'host_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes refresh tokens even when auth_host_id differs'),
-    ('public', 'host_t', 'public', 'agent_model_rate_t', 'agent_model_rate_t_host_id_fkey', 'IGNORE', 'NONE', 'Immutable agent model rate history is retained independently'),
-    ('public', 'host_t', 'public', 'auth_session_audit_t', 'auth_session_audit_t_auth_host_id_fkey', 'IGNORE', 'NONE', 'Authentication audit history is retained independently'),
-    ('public', 'host_t', 'public', 'auth_session_audit_t', 'auth_session_audit_t_host_id_fkey', 'IGNORE', 'NONE', 'Authentication audit history is retained independently'),
-    ('public', 'host_t', 'public', 'auth_session_t', 'auth_session_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes non-restorable authorization sessions'),
-    ('public', 'host_t', 'public', 'config_snapshot_t', 'config_snapshot_t_host_id_fkey', 'IGNORE', 'NONE', 'Immutable configuration snapshots are retained independently'),
-    ('public', 'host_t', 'public', 'environment_property_t', 'host_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'host_t', 'public', 'event_failure_transaction_t', 'event_failure_transaction_host_fk', 'IGNORE', 'NONE', 'Failure evidence is retained independently'),
-    ('public', 'host_t', 'public', 'event_projection_worker_t', 'event_projection_worker_host_fk', 'IGNORE', 'NONE', 'Projection worker lifecycle is operationally managed'),
-    ('public', 'host_t', 'public', 'event_replay_action_request_t', 'event_replay_action_request_host_fk', 'IGNORE', 'NONE', 'Replay action audit history is retained independently'),
-    ('public', 'host_t', 'public', 'event_replay_audit_t', 'event_replay_audit_host_fk', 'IGNORE', 'NONE', 'Replay audit history is retained independently'),
-    ('public', 'host_t', 'public', 'event_replay_request_t', 'event_replay_request_host_fk', 'IGNORE', 'NONE', 'Replay request lifecycle is operationally managed'),
-    ('public', 'host_t', 'public', 'event_replay_retention_log_t', 'event_replay_retention_log_host_fk', 'IGNORE', 'NONE', 'Retention audit history is retained independently'),
-    ('public', 'host_t', 'public', 'instance_clone_request_t', 'instance_clone_request_host_fk', 'IGNORE', 'NONE', 'Clone request lifecycle is command-owned and status-driven'),
-    ('public', 'host_t', 'public', 'instance_graph_revision_t', 'instance_graph_revision_host_fk', 'IGNORE', 'NONE', 'Graph revision coordination state is retained independently'),
-    ('public', 'host_t', 'public', 'knowledge_base_import_t', 'knowledge_base_import_t_host_id_fkey', 'IGNORE', 'NONE', 'Knowledge import lifecycle is command-owned and status-driven'),
-    ('public', 'host_t', 'public', 'knowledge_base_manifest_export_t', 'knowledge_base_manifest_export_t_host_id_fkey', 'IGNORE', 'NONE', 'Knowledge export history is retained independently'),
-    ('public', 'host_t', 'public', 'knowledge_base_t', 'knowledge_base_t_host_id_fkey', 'IGNORE', 'NONE', 'Knowledge base lifecycle is command-owned'),
-    ('public', 'host_t', 'public', 'knowledge_embedding_profile_t', 'knowledge_embedding_profile_t_host_id_fkey', 'IGNORE', 'NONE', 'Embedding profile lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'host_t', 'public', 'knowledge_ingestion_policy_t', 'knowledge_ingestion_policy_t_host_id_fkey', 'IGNORE', 'NONE', 'Ingestion policy lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'host_t', 'public', 'knowledge_retrieval_profile_t', 'knowledge_retrieval_profile_t_host_id_fkey', 'IGNORE', 'NONE', 'Retrieval profile lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'host_t', 'public', 'llm_gateway_publication_t', 'llm_gateway_publication_t_host_id_fkey', 'IGNORE', 'NONE', 'Publication lifecycle is immutable and command-owned'),
-    ('public', 'host_t', 'public', 'llm_model_policy_t', 'llm_model_policy_t_host_id_fkey', 'IGNORE', 'NONE', 'Model policy lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'host_t', 'public', 'llm_model_registration_t', 'llm_model_registration_t_host_id_fkey', 'IGNORE', 'NONE', 'Model registration lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'host_t', 'public', 'llm_network_zone_t', 'llm_network_zone_t_host_id_fkey', 'IGNORE', 'NONE', 'Network-zone lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'host_t', 'public', 'llm_projection_resource_t', 'llm_projection_resource_t_host_id_fkey', 'IGNORE', 'NONE', 'Projection resources are immutable and release-owned'),
-    ('public', 'host_t', 'public', 'llm_provider_account_t', 'llm_provider_account_t_host_id_fkey', 'IGNORE', 'NONE', 'Provider-account lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'host_t', 'public', 'llm_public_alias_t', 'llm_public_alias_t_host_id_fkey', 'IGNORE', 'NONE', 'Public-alias lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'host_t', 'public', 'message_t', 'message_host_fk', 'IGNORE', 'NONE', 'Message history is retained independently'),
-    ('public', 'host_t', 'public', 'notification_t', 'notification_t_host_id_fkey', 'IGNORE', 'NONE', 'Notification history is retained independently'),
-    ('public', 'host_t', 'public', 'pii_token_vault_t', 'pii_token_vault_t_host_id_fkey', 'IGNORE', 'NONE', 'PII vault records remain retained and access-controlled while a host is inactive'),
-    ('public', 'host_t', 'public', 'private_conversation_t', 'private_conversation_t_host_id_fkey', 'IGNORE', 'NONE', 'Conversation history is retained independently'),
-    ('public', 'host_t', 'public', 'product_version_t', 'host_id_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'host_t', 'public', 'role_t', 'role_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'host_t', 'public', 'skill_package_t', 'skill_package_t_host_id_fkey', 'IGNORE', 'NONE', 'Skill package lifecycle is command-owned'),
-    ('public', 'host_t', 'public', 'user_host_t', 'user_host_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'host_t', 'public', 'workflow_endpoint_target_t', 'workflow_endpoint_target_t_host_id_fkey', 'IGNORE', 'NONE', 'Workflow endpoint lifecycle is command-owned until it implements the complete soft-delete audit contract'),
-    ('public', 'host_t', 'public', 'workflow_execution_policy_t', 'workflow_execution_policy_t_host_id_fkey', 'IGNORE', 'NONE', 'Workflow execution policy lifecycle is command-owned'),
-    ('public', 'host_t', 'public', 'workflow_executor_tenant_turn_t', 'workflow_executor_tenant_turn_t_host_id_fkey', 'IGNORE', 'NONE', 'Workflow executor turn history is retained independently'),
-    ('public', 'instance_api_t', 'public', 'instance_api_path_prefix_t', 'instance_api_path_prefix_t_host_id_instance_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_api_t', 'public', 'instance_api_property_t', 'instance_api_property_t_host_id_instance_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_api_t', 'public', 'instance_app_api_t', 'instance_app_api_t_host_id_instance_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_api_t', 'public', 'agent_a2a_binding_t', 'agent_a2a_binding_instance_agent_fk', 'IGNORE', 'NONE', 'A2A binding lifecycle is command-owned and independently audited'),
-    ('public', 'instance_app_api_t', 'public', 'instance_app_api_property_t', 'instance_app_api_property_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_app_t', 'public', 'instance_app_api_t', 'instance_app_api_t_host_id_instance_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_app_t', 'public', 'instance_app_property_t', 'instance_app_property_t_host_id_instance_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_t', 'public', 'auth_client_owner_t', 'auth_client_owner_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_t', 'public', 'access_target_t', 'access_target_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable access-target relationship'),
-    ('public', 'instance_t', 'public', 'config_snapshot_t', 'config_snapshot_t_host_id_instance_id_fkey', 'IGNORE', 'NONE', 'Immutable configuration snapshots are retained independently'),
-    ('public', 'instance_t', 'public', 'deployment_instance_t', 'deployment_instance_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_t', 'public', 'gateway_tool_binding_t', 'gateway_tool_binding_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_t', 'public', 'gateway_tool_publication_t', 'gateway_tool_publication_t_host_id_instance_id_fkey', 'IGNORE', 'NONE', 'Publication lifecycle is immutable and command-owned'),
-    ('public', 'instance_t', 'public', 'instance_api_t', 'instance_api_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_t', 'public', 'instance_app_t', 'instance_app_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_t', 'public', 'instance_file_t', 'instance_file_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_t', 'public', 'instance_property_t', 'instance_fkv2', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'instance_t', 'public', 'llm_gateway_instance_property_ownership_t', 'llm_gateway_instance_property_ownershi_host_id_instance_id_fkey', 'IGNORE', 'NONE', 'Ownership lifecycle is release-managed and lacks the soft-delete audit contract'),
-    ('public', 'instance_t', 'public', 'llm_gateway_instance_publication_t', 'llm_gateway_instance_publication_t_host_id_instance_id_fkey', 'IGNORE', 'NONE', 'Instance publication lifecycle is immutable and command-owned'),
-    ('public', 'instance_t', 'public', 'agent_a2a_instance_publication_t', 'agent_a2a_instance_publication_runtime_fk', 'IGNORE', 'NONE', 'A2A instance publication lifecycle is immutable and command-owned'),
-    ('public', 'org_t', 'public', 'host_t', 'host_t_domain_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'pipeline_t', 'public', 'product_version_pipeline_t', 'product_version_pipeline_t_host_id_pipeline_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'platform_t', 'public', 'pipeline_t', 'pipeline_t_host_id_platform_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'position_t', 'public', 'position_col_filter_t', 'position_col_filter_t_host_id_position_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'position_t', 'public', 'position_permission_t', 'position_permission_t_host_id_position_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'position_t', 'public', 'position_row_filter_t', 'position_row_filter_t_host_id_position_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'position_t', 'public', 'user_position_t', 'user_position_t_host_id_position_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'product_version_t', 'public', 'instance_t', 'product_version_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'product_version_t', 'public', 'product_version_config_profile_t', 'product_version_config_profile__host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'product_version_t', 'public', 'product_version_config_property_t', 'product_version_config_property_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'product_version_t', 'public', 'product_version_config_t', 'product_version_config_t_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'product_version_t', 'public', 'product_version_environment_t', 'product_version_environment_t_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'product_version_t', 'public', 'product_version_pipeline_t', 'product_version_pipeline_t_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'product_version_t', 'public', 'product_version_property_t', 'product_version_property_t_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'ref_table_t', 'public', 'ref_value_t', 'ref_value_t_table_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'ref_value_t', 'public', 'relation_t', 'relation_t_value_id_from_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'ref_value_t', 'public', 'relation_t', 'relation_t_value_id_to_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'ref_value_t', 'public', 'value_locale_t', 'value_locale_t_value_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'relation_type_t', 'public', 'relation_t', 'relation_t_relation_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'role_t', 'public', 'role_col_filter_t', 'role_col_filter_t_host_id_role_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'role_t', 'public', 'role_permission_t', 'role_permission_t_host_id_role_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'role_t', 'public', 'role_row_filter_t', 'role_row_filter_t_host_id_role_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'role_t', 'public', 'role_user_t', 'role_user_t_host_id_role_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'rule_t', 'public', 'api_endpoint_rule_t', 'rule_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'rule_t', 'public', 'rule_test_case_t', 'rule_test_case_rule_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'tag_t', 'public', 'entity_tag_t', 'entity_tag_t_tag_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'user_host_t', 'public', 'customer_t', 'customer_t_host_id_user_id_fkey', 'IGNORE', 'NONE', 'Preserve recoverable customer identity while host membership is inactive'),
-    ('public', 'user_host_t', 'public', 'employee_t', 'employee_t_host_id_user_id_fkey', 'IGNORE', 'NONE', 'Preserve recoverable employee identity while host membership is inactive'),
-    ('public', 'user_t', 'public', 'attribute_user_t', 'attribute_user_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'user_t', 'public', 'auth_code_t', 'auth_code_t_user_id_fkey', 'HARD_DELETE', 'NONE', 'User deactivation revokes non-restorable authorization codes'),
-    ('public', 'user_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_user_id_fkey', 'HARD_DELETE', 'NONE', 'User deactivation revokes non-restorable refresh tokens'),
-    ('public', 'user_t', 'public', 'auth_session_t', 'auth_session_t_user_id_fkey', 'HARD_DELETE', 'NONE', 'User deactivation revokes non-restorable authorization sessions'),
-    ('public', 'user_t', 'public', 'config_snapshot_t', 'config_snapshot_t_user_id_fkey', 'IGNORE', 'NONE', 'Immutable configuration snapshots are retained independently'),
-    ('public', 'user_t', 'public', 'group_user_t', 'group_user_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'user_t', 'public', 'role_user_t', 'role_user_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'user_t', 'public', 'user_col_filter_t', 'user_col_filter_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'user_t', 'public', 'user_crypto_wallet_t', 'user_crypto_wallet_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'user_t', 'public', 'user_host_t', 'user_host_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'user_t', 'public', 'user_permission_t', 'user_permission_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship'),
-    ('public', 'user_t', 'public', 'user_row_filter_t', 'user_row_filter_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship')
-;
-
--- Schema-owned deployment metadata; event projection would leave the FK
--- registry temporarily invalid during a fresh install or forward migration.
-INSERT INTO public.cascade_relationship_policy_t (
-    parent_schema,
-    parent_table,
-    child_schema,
-    child_table,
-    constraint_name,
-    delete_action,
-    restore_action,
-    policy_description
-)
-SELECT
-    parent_schema,
-    parent_table,
-    child_schema,
-    child_table,
-    constraint_name,
-    delete_action,
-    restore_action,
-    policy_description
-FROM cascade_relationship_policy_seed_t
-ON CONFLICT (
-    parent_schema,
-    parent_table,
-    child_schema,
-    child_table,
-    constraint_name
-) DO UPDATE
-SET delete_action = EXCLUDED.delete_action,
-    restore_action = EXCLUDED.restore_action,
-    policy_description = EXCLUDED.policy_description,
-    update_user = SESSION_USER,
-    update_ts = CURRENT_TIMESTAMP;
-
+ALTER TABLE public.operational_store_profile_t DISABLE TRIGGER operational_store_legacy_profile_write_guard_trg;
+INSERT INTO public.operational_store_profile_t (profile_id, profile_version, deployment_profile, provider, profile_config, aggregate_version, active, update_user, update_ts) VALUES
+    ('customer-managed-registration-v2', 2, 'CUSTOMER_MANAGED', 'CUSTOMER_MANAGED', '{"databaseProvisionedExternally":true,"hostScoped":true,"portalDatabaseAccess":false}', 1, true, 'registration-v2-bootstrap', CURRENT_TIMESTAMP) ON CONFLICT (profile_id, profile_version) DO NOTHING;
+INSERT INTO public.operational_store_profile_t (profile_id, profile_version, deployment_profile, provider, profile_config, aggregate_version, active, update_user, update_ts) VALUES
+    ('dev-dedicated-postgres-v1', 1, 'DEV_DEDICATED', 'POSTGRESQL', '{"databaseIdentity":"operations","databasePerHostEnvironment":true,"pooled":false,"providerAdapter":"postgres17-pgvector-container"}', 1, false, 'p7-compatibility-closure', CURRENT_TIMESTAMP) ON CONFLICT (profile_id, profile_version) DO NOTHING;
+ALTER TABLE public.operational_store_profile_t ENABLE TRIGGER operational_store_legacy_profile_write_guard_trg;
 COMMIT;
+-- Generated by bin/generate-ddl.py; do not edit.
+SET search_path = public;
+BEGIN;
+SET LOCAL check_function_bodies = true;
+CREATE OR REPLACE FUNCTION public.validate_cascade_relationship_policies()
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+    invalid_policy RECORD;
+    invalid_width RECORD;
+    unclassified_relationship RECORD;
+BEGIN
+    SELECT policy.*
+      INTO invalid_policy
+      FROM cascade_relationship_policy_t policy
+      LEFT JOIN pg_namespace pn
+        ON pn.nspname = policy.parent_schema
+      LEFT JOIN pg_class pc
+        ON pc.relnamespace = pn.oid
+       AND pc.relname = policy.parent_table
+      LEFT JOIN pg_namespace cn
+        ON cn.nspname = policy.child_schema
+      LEFT JOIN pg_class cc
+        ON cc.relnamespace = cn.oid
+       AND cc.relname = policy.child_table
+      LEFT JOIN pg_constraint constraint_row
+        ON constraint_row.contype = 'f'
+       AND constraint_row.conname = policy.constraint_name
+       AND constraint_row.confrelid = pc.oid
+       AND constraint_row.conrelid = cc.oid
+     WHERE constraint_row.oid IS NULL
+     ORDER BY
+        policy.parent_schema,
+        policy.parent_table,
+        policy.child_schema,
+        policy.child_table,
+        policy.constraint_name
+     LIMIT 1;
 
--- Phase 3 decoupling outbox. This remains Agent-owned operational state until
--- Phase 4 moves the Agent schema; it never becomes execution authority.
-CREATE TABLE public.agent_execution_outbox_t (
-    host_id uuid NOT NULL,
-    dispatch_id uuid NOT NULL,
-    request_id uuid NOT NULL,
-    command_kind character varying(16) NOT NULL,
-    command_payload jsonb NOT NULL,
-    payload_digest character varying(71) NOT NULL,
-    state character varying(16) DEFAULT 'PENDING'::character varying NOT NULL,
-    attempt_count integer DEFAULT 0 NOT NULL,
-    next_attempt_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    last_error character varying(512),
-    dispatched_ts timestamp with time zone,
-    created_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT agent_execution_outbox_t_pkey PRIMARY KEY (host_id, dispatch_id),
-    CONSTRAINT agent_execution_outbox_t_request_key UNIQUE (host_id, request_id, command_kind),
-    CONSTRAINT agent_execution_outbox_t_command_check CHECK ((command_kind)::text = ANY (ARRAY['REQUEST'::text, 'CLEANUP'::text])),
-    CONSTRAINT agent_execution_outbox_t_payload_check CHECK (jsonb_typeof(command_payload) = 'object'::text),
-    CONSTRAINT agent_execution_outbox_t_digest_check CHECK ((payload_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text),
-    CONSTRAINT agent_execution_outbox_t_state_check CHECK ((state)::text = ANY (ARRAY['PENDING'::text, 'DISPATCHED'::text, 'DEAD'::text]))
-);
+    IF FOUND THEN
+        RAISE EXCEPTION
+            'cascade policy references missing or mismatched foreign key: %.% -> %.% (%)',
+            invalid_policy.parent_schema,
+            invalid_policy.parent_table,
+            invalid_policy.child_schema,
+            invalid_policy.child_table,
+            invalid_policy.constraint_name;
+    END IF;
 
-CREATE INDEX agent_execution_outbox_pending_idx
-    ON public.agent_execution_outbox_t (next_attempt_ts, created_ts)
-    WHERE state = 'PENDING';
+    SELECT *
+      INTO invalid_policy
+      FROM cascade_relationships_v
+     WHERE delete_action IN ('SOFT_DELETE', 'HARD_DELETE')
+       AND NOT (
+           parent_has_active
+           AND parent_has_delete_ts
+           AND parent_has_delete_user
+           AND parent_has_update_ts
+           AND parent_has_update_user
+       )
+     ORDER BY parent_schema, parent_table, child_schema, child_table, constraint_name
+     LIMIT 1;
 
-COMMENT ON TABLE public.agent_execution_outbox_t IS
-    'Agent-owned durable handoff to the Controller execution API; Config Server execution tables are not authoritative.';
+    IF FOUND THEN
+        RAISE EXCEPTION
+            'cascade parent %.% does not implement the complete soft-delete contract for constraint %',
+            invalid_policy.parent_schema,
+            invalid_policy.parent_table,
+            invalid_policy.constraint_name;
+    END IF;
 
--- Phase 5 A2A control-plane publication. Runtime services receive only the
--- immutable audience-specific projections compiled from these records.
-CREATE UNIQUE INDEX instance_api_agent_runtime_identity_uk
-    ON public.instance_api_t(host_id,instance_api_id,instance_id,api_version_id);
+    SELECT *
+      INTO invalid_policy
+      FROM cascade_relationships_v
+     WHERE delete_action = 'SOFT_DELETE'
+       AND NOT (
+           child_has_active
+           AND child_has_delete_ts
+           AND child_has_delete_user
+           AND child_has_update_ts
+           AND child_has_update_user
+       )
+     ORDER BY parent_schema, parent_table, child_schema, child_table, constraint_name
+     LIMIT 1;
 
-CREATE TABLE public.agent_a2a_binding_t (
-    host_id uuid NOT NULL,
-    a2a_binding_id uuid NOT NULL,
-    agent_def_id uuid NOT NULL,
-    instance_api_id uuid NOT NULL,
-    environment character varying(32) NOT NULL,
-    agent_ref character varying(256) NOT NULL,
-    binding_name character varying(126) NOT NULL,
-    implementation_kind character varying(32) NOT NULL,
-    deployment_mode character varying(16) NOT NULL,
-    public_path character varying(512) NOT NULL,
-    runtime_service_id character varying(256) NOT NULL,
-    runtime_instance_id uuid NOT NULL,
-    inbound_enabled boolean DEFAULT true NOT NULL,
-    outbound_enabled boolean DEFAULT false NOT NULL,
-    profile_config jsonb DEFAULT '{}'::jsonb NOT NULL,
-    access_policy jsonb DEFAULT '{}'::jsonb NOT NULL,
-    backend_config jsonb DEFAULT '{}'::jsonb NOT NULL,
-    policy_digest character varying(71) NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT agent_a2a_binding_t_pkey PRIMARY KEY (host_id,a2a_binding_id),
-    CONSTRAINT agent_a2a_binding_agent_fk FOREIGN KEY (host_id,agent_def_id)
-        REFERENCES public.agent_definition_t(host_id,agent_def_id) ON DELETE CASCADE,
-    CONSTRAINT agent_a2a_binding_instance_agent_fk FOREIGN KEY (host_id,instance_api_id,runtime_instance_id,agent_def_id)
-        REFERENCES public.instance_api_t(host_id,instance_api_id,instance_id,api_version_id) ON DELETE CASCADE,
-    CONSTRAINT agent_a2a_binding_ref_ck CHECK (agent_ref ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'),
-    CONSTRAINT agent_a2a_binding_environment_ck CHECK (length(btrim(environment))>0),
-    CONSTRAINT agent_a2a_binding_implementation_ck CHECK (implementation_kind IN ('LIGHT_AGENT','EXTERNAL_SIDECAR','REMOTE_A2A')),
-    CONSTRAINT agent_a2a_binding_mode_ck CHECK (deployment_mode IN ('NATIVE','SIDECAR','SHARED')),
-    CONSTRAINT agent_a2a_binding_mode_kind_ck CHECK ((implementation_kind='LIGHT_AGENT' AND deployment_mode='NATIVE') OR (implementation_kind<>'LIGHT_AGENT' AND deployment_mode IN ('SIDECAR','SHARED'))),
-    CONSTRAINT agent_a2a_binding_path_ck CHECK (public_path ~ '^/[^?#]*$'),
-    CONSTRAINT agent_a2a_binding_profile_ck CHECK (jsonb_typeof(profile_config)='object'),
-    CONSTRAINT agent_a2a_binding_access_ck CHECK (jsonb_typeof(access_policy)='object'),
-    CONSTRAINT agent_a2a_binding_backend_ck CHECK (jsonb_typeof(backend_config)='object'),
-    CONSTRAINT agent_a2a_binding_policy_digest_ck CHECK (policy_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT agent_a2a_binding_version_ck CHECK (aggregate_version>0)
-);
-CREATE UNIQUE INDEX agent_a2a_binding_ref_active_uk
-    ON public.agent_a2a_binding_t(host_id,environment,agent_ref) WHERE active;
-CREATE UNIQUE INDEX agent_a2a_binding_path_active_uk
-    ON public.agent_a2a_binding_t(host_id,environment,public_path) WHERE active;
+    IF FOUND THEN
+        RAISE EXCEPTION
+            'soft-delete child %.% does not implement the complete contract for constraint %',
+            invalid_policy.child_schema,
+            invalid_policy.child_table,
+            invalid_policy.constraint_name;
+    END IF;
 
-CREATE TABLE public.agent_a2a_publication_t (
-    host_id uuid NOT NULL,
-    publication_id uuid NOT NULL,
-    a2a_binding_id uuid NOT NULL,
-    publication_version bigint NOT NULL,
-    publication_state character varying(16) NOT NULL,
-    content_digest character varying(71) NOT NULL,
-    policy_digest character varying(71) NOT NULL,
-    manifest jsonb NOT NULL,
-    runtime_projections jsonb NOT NULL,
-    validation_result jsonb NOT NULL,
-    signed_agent_card jsonb,
-    valid_from timestamp with time zone NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    revocation_epoch bigint DEFAULT 0 NOT NULL,
-    source_aggregate_versions jsonb NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT agent_a2a_publication_t_pkey PRIMARY KEY(host_id,publication_id),
-    CONSTRAINT agent_a2a_publication_binding_fk FOREIGN KEY(host_id,a2a_binding_id) REFERENCES public.agent_a2a_binding_t(host_id,a2a_binding_id) ON DELETE CASCADE,
-    CONSTRAINT agent_a2a_publication_version_uk UNIQUE(host_id,a2a_binding_id,publication_version),
-    CONSTRAINT agent_a2a_publication_version_ck CHECK(publication_version>0 AND aggregate_version>0),
-    CONSTRAINT agent_a2a_publication_state_ck CHECK(publication_state IN ('PREPARED','STAGED','ACTIVE','REVOKED','EXPIRED','REJECTED')),
-    CONSTRAINT agent_a2a_publication_content_digest_ck CHECK(content_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT agent_a2a_publication_policy_digest_ck CHECK(policy_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT agent_a2a_publication_manifest_ck CHECK(jsonb_typeof(manifest)='object'),
-    CONSTRAINT agent_a2a_publication_projection_ck CHECK(jsonb_typeof(runtime_projections)='object'),
-    CONSTRAINT agent_a2a_publication_validation_ck CHECK(jsonb_typeof(validation_result)='object'),
-    CONSTRAINT agent_a2a_publication_card_ck CHECK(signed_agent_card IS NULL OR jsonb_typeof(signed_agent_card)='object'),
-    CONSTRAINT agent_a2a_publication_sources_ck CHECK(jsonb_typeof(source_aggregate_versions)='object'),
-    CONSTRAINT agent_a2a_publication_validity_ck CHECK(expires_at>valid_from),
-    CONSTRAINT agent_a2a_publication_revocation_ck CHECK(revocation_epoch>=0)
-);
-CREATE UNIQUE INDEX agent_a2a_publication_active_uk
-    ON public.agent_a2a_publication_t(host_id,a2a_binding_id) WHERE active AND publication_state='ACTIVE';
+    WITH soft_child_requirements AS (
+        SELECT
+            child_schema,
+            child_table,
+            count(*)::integer AS relationship_count,
+            (14 + 33 * count(*))::integer AS required_length
+        FROM cascade_relationships_v
+        WHERE delete_action = 'SOFT_DELETE'
+        GROUP BY child_schema, child_table
+    )
+    SELECT
+        requirement.child_schema,
+        requirement.child_table,
+        requirement.relationship_count,
+        requirement.required_length,
+        (attribute_row.atttypmod - 4)::integer AS actual_length
+      INTO invalid_width
+      FROM soft_child_requirements requirement
+      JOIN pg_namespace namespace_row
+        ON namespace_row.nspname = requirement.child_schema
+      JOIN pg_class class_row
+        ON class_row.relnamespace = namespace_row.oid
+       AND class_row.relname = requirement.child_table
+      JOIN pg_attribute attribute_row
+        ON attribute_row.attrelid = class_row.oid
+       AND attribute_row.attname = 'delete_user'
+       AND NOT attribute_row.attisdropped
+     WHERE attribute_row.atttypid IN ('varchar'::regtype, 'bpchar'::regtype)
+       AND attribute_row.atttypmod >= 0
+       AND attribute_row.atttypmod - 4 < requirement.required_length
+     ORDER BY requirement.child_schema, requirement.child_table
+     LIMIT 1;
 
-CREATE TABLE public.agent_a2a_instance_publication_t (
-    host_id uuid NOT NULL,
-    instance_publication_id uuid NOT NULL,
-    publication_id uuid NOT NULL,
-    runtime_instance_id uuid NOT NULL,
-    audience character varying(32) NOT NULL,
-    property_set_digest character varying(71) NOT NULL,
-    config_snapshot_id uuid,
-    application_version bigint NOT NULL,
-    application_state character varying(16) NOT NULL,
-    acknowledged_digest character varying(71),
-    acknowledged_ts timestamp with time zone,
-    rollback_of_instance_publication_id uuid,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT agent_a2a_instance_publication_t_pkey PRIMARY KEY(host_id,instance_publication_id),
-    CONSTRAINT agent_a2a_instance_publication_publication_fk FOREIGN KEY(host_id,publication_id) REFERENCES public.agent_a2a_publication_t(host_id,publication_id) ON DELETE CASCADE,
-    CONSTRAINT agent_a2a_instance_publication_runtime_fk FOREIGN KEY(host_id,runtime_instance_id) REFERENCES public.instance_t(host_id,instance_id) ON DELETE CASCADE,
-    CONSTRAINT agent_a2a_instance_publication_rollback_fk FOREIGN KEY(host_id,rollback_of_instance_publication_id) REFERENCES public.agent_a2a_instance_publication_t(host_id,instance_publication_id) ON DELETE SET NULL,
-    CONSTRAINT agent_a2a_instance_publication_version_uk UNIQUE(host_id,publication_id,runtime_instance_id,audience,application_version),
-    CONSTRAINT agent_a2a_instance_publication_audience_ck CHECK(audience IN ('light-gateway','light-agent','light-a2a','light-workflow')),
-    CONSTRAINT agent_a2a_instance_publication_digest_ck CHECK(property_set_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT agent_a2a_instance_publication_ack_digest_ck CHECK(acknowledged_digest IS NULL OR acknowledged_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT agent_a2a_instance_publication_state_ck CHECK(application_state IN ('STAGED','ACTIVE','ACKNOWLEDGED','REJECTED','ROLLED_BACK','REVOKED')),
-    CONSTRAINT agent_a2a_instance_publication_version_ck CHECK(application_version>0 AND aggregate_version>0)
-);
-CREATE UNIQUE INDEX agent_a2a_instance_publication_active_uk
-    ON public.agent_a2a_instance_publication_t(host_id,publication_id,runtime_instance_id,audience)
-    WHERE active AND application_state IN ('ACTIVE','ACKNOWLEDGED');
+    IF FOUND THEN
+        RAISE EXCEPTION
+            'soft-delete child %.% delete_user width % is smaller than required % for % cascade relationships',
+            invalid_width.child_schema,
+            invalid_width.child_table,
+            invalid_width.actual_length,
+            invalid_width.required_length,
+            invalid_width.relationship_count;
+    END IF;
 
-COMMENT ON TABLE public.agent_a2a_binding_t IS 'Structured, editable A2A binding authoring state; never runtime request-path authority.';
-COMMENT ON TABLE public.agent_a2a_publication_t IS 'Immutable digest-bound A2A publication and audience-specific Config Server projections.';
-COMMENT ON TABLE public.agent_a2a_instance_publication_t IS 'Application, acknowledgement, and rollback evidence for one runtime audience.';
+    SELECT *
+      INTO invalid_policy
+      FROM cascade_relationships_v
+     WHERE delete_action = 'HARD_DELETE'
+       AND foreign_key_delete_action <> 'CASCADE'
+     ORDER BY parent_schema, parent_table, child_schema, child_table, constraint_name
+     LIMIT 1;
 
--- Phase 2 A2A normalized Portal authoring. Immutable runtime values remain in
--- agent_a2a_publication_t and Config Server snapshots.
-CREATE TABLE public.a2a_provider_profile_t (
-    host_id uuid NOT NULL,
-    provider_profile_id uuid NOT NULL,
-    profile_name character varying(126) NOT NULL,
-    provider_name character varying(126) NOT NULL,
-    provider_url character varying(1024),
-    documentation_url character varying(1024),
-    icon_url character varying(1024),
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT a2a_provider_profile_t_pkey PRIMARY KEY(host_id,provider_profile_id),
-    CONSTRAINT a2a_provider_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
-    CONSTRAINT a2a_provider_profile_name_uk UNIQUE(host_id,profile_name),
-    CONSTRAINT a2a_provider_profile_version_ck CHECK(aggregate_version>0),
-    CONSTRAINT a2a_provider_profile_urls_ck CHECK((provider_url IS NULL OR provider_url ~ '^https://') AND (documentation_url IS NULL OR documentation_url ~ '^https://') AND (icon_url IS NULL OR icon_url ~ '^https://'))
-);
+    IF FOUND THEN
+        RAISE EXCEPTION
+            'hard-delete policy requires ON DELETE CASCADE for constraint %',
+            invalid_policy.constraint_name;
+    END IF;
 
-CREATE TABLE public.agent_a2a_public_metadata_t (
-    host_id uuid NOT NULL,
-    public_metadata_id uuid NOT NULL,
-    agent_def_id uuid NOT NULL,
-    provider_profile_id uuid,
-    display_name character varying(126),
-    description character varying(2000),
-    documentation_url character varying(1024),
-    icon_url character varying(1024),
-    semantic_version character varying(64),
-    source_provenance jsonb DEFAULT '{}'::jsonb NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT agent_a2a_public_metadata_t_pkey PRIMARY KEY(host_id,public_metadata_id),
-    CONSTRAINT agent_a2a_public_metadata_agent_fk FOREIGN KEY(host_id,agent_def_id) REFERENCES public.agent_definition_t(host_id,agent_def_id) ON DELETE CASCADE,
-    CONSTRAINT agent_a2a_public_metadata_provider_fk FOREIGN KEY(host_id,provider_profile_id) REFERENCES public.a2a_provider_profile_t(host_id,provider_profile_id) ON DELETE RESTRICT,
-    CONSTRAINT agent_a2a_public_metadata_agent_uk UNIQUE(host_id,agent_def_id),
-    CONSTRAINT agent_a2a_public_metadata_sources_ck CHECK(jsonb_typeof(source_provenance)='object'),
-    CONSTRAINT agent_a2a_public_metadata_version_ck CHECK(aggregate_version>0),
-    CONSTRAINT agent_a2a_public_metadata_urls_ck CHECK((documentation_url IS NULL OR documentation_url ~ '^https://') AND (icon_url IS NULL OR icon_url ~ '^https://'))
-);
+    SELECT
+        relationship.child_schema,
+        relationship.child_table,
+        downstream_namespace.nspname::text AS downstream_schema,
+        downstream_table.relname::text AS downstream_table,
+        downstream_constraint.conname::text AS downstream_constraint
+      INTO invalid_policy
+      FROM cascade_relationships_v relationship
+      JOIN pg_constraint downstream_constraint
+        ON downstream_constraint.contype = 'f'
+       AND downstream_constraint.confrelid = relationship.child_table_oid
+      JOIN pg_class downstream_table
+        ON downstream_table.oid = downstream_constraint.conrelid
+      JOIN pg_namespace downstream_namespace
+        ON downstream_namespace.oid = downstream_table.relnamespace
+     WHERE relationship.delete_action = 'HARD_DELETE'
+       AND downstream_constraint.confdeltype <> 'c'
+     ORDER BY
+        relationship.child_schema,
+        relationship.child_table,
+        downstream_namespace.nspname,
+        downstream_table.relname,
+        downstream_constraint.conname
+     LIMIT 1;
 
-CREATE TABLE public.a2a_extension_t (
-    host_id uuid NOT NULL,
-    extension_id uuid NOT NULL,
-    extension_uri character varying(1024) NOT NULL,
-    extension_version character varying(64) NOT NULL,
-    description character varying(2000),
-    schema_document jsonb DEFAULT '{}'::jsonb NOT NULL,
-    dependency_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
-    activation_state character varying(16) DEFAULT 'DRAFT' NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT a2a_extension_t_pkey PRIMARY KEY(host_id,extension_id),
-    CONSTRAINT a2a_extension_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
-    CONSTRAINT a2a_extension_uri_version_uk UNIQUE(host_id,extension_uri,extension_version),
-    CONSTRAINT a2a_extension_uri_ck CHECK(extension_uri ~ '^https://'),
-    CONSTRAINT a2a_extension_schema_ck CHECK(jsonb_typeof(schema_document)='object'),
-    CONSTRAINT a2a_extension_dependencies_ck CHECK(jsonb_typeof(dependency_ids)='array'),
-    CONSTRAINT a2a_extension_initial_state_ck CHECK(activation_state IN ('DRAFT','OPTIONAL_DATA','DISABLED')),
-    CONSTRAINT a2a_extension_version_ck CHECK(aggregate_version>0)
-);
+    IF FOUND THEN
+        RAISE EXCEPTION
+            'hard-delete child %.% is referenced by non-cascading constraint %.% (%)',
+            invalid_policy.child_schema,
+            invalid_policy.child_table,
+            invalid_policy.downstream_schema,
+            invalid_policy.downstream_table,
+            invalid_policy.downstream_constraint;
+    END IF;
 
-CREATE TABLE public.a2a_extended_card_profile_t (
-    host_id uuid NOT NULL,
-    extended_card_profile_id uuid NOT NULL,
-    profile_name character varying(126) NOT NULL,
-    authorization_policy_digest character varying(71) NOT NULL,
-    allowed_principal_prefixes jsonb NOT NULL,
-    card_document jsonb NOT NULL,
-    profile_state character varying(16) NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT a2a_extended_card_profile_t_pkey PRIMARY KEY(host_id,extended_card_profile_id),
-    CONSTRAINT a2a_extended_card_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
-    CONSTRAINT a2a_extended_card_profile_name_uk UNIQUE(host_id,profile_name),
-    CONSTRAINT a2a_extended_card_profile_policy_ck CHECK(authorization_policy_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT a2a_extended_card_profile_principals_ck CHECK(jsonb_typeof(allowed_principal_prefixes)='array' AND jsonb_array_length(allowed_principal_prefixes)>0),
-    CONSTRAINT a2a_extended_card_profile_card_ck CHECK(jsonb_typeof(card_document)='object'),
-    CONSTRAINT a2a_extended_card_profile_state_ck CHECK(profile_state IN ('APPROVED','DISABLED')),
-    CONSTRAINT a2a_extended_card_profile_version_ck CHECK(aggregate_version>0)
-);
+    WITH candidate_relationships AS (
+        SELECT
+            pn.nspname::text AS parent_schema,
+            pc.relname::text AS parent_table,
+            cn.nspname::text AS child_schema,
+            cc.relname::text AS child_table,
+            constraint_row.conname::text AS constraint_name
+        FROM pg_constraint constraint_row
+        JOIN pg_class pc ON pc.oid = constraint_row.confrelid
+        JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+        JOIN pg_class cc ON cc.oid = constraint_row.conrelid
+        JOIN pg_namespace cn ON cn.oid = cc.relnamespace
+        WHERE constraint_row.contype = 'f'
+          AND pn.nspname = 'public'
+          AND cn.nspname = 'public'
+          AND EXISTS (
+              SELECT 1
+              FROM pg_attribute a
+              WHERE a.attrelid = pc.oid
+                AND a.attname = 'delete_ts'
+                AND NOT a.attisdropped
+          )
+          AND EXISTS (
+              SELECT 1
+              FROM pg_attribute a
+              WHERE a.attrelid = pc.oid
+                AND a.attname = 'active'
+                AND NOT a.attisdropped
+          )
+    )
+    SELECT candidate.*
+      INTO unclassified_relationship
+      FROM candidate_relationships candidate
+      LEFT JOIN cascade_relationship_policy_t policy
+        ON policy.parent_schema = candidate.parent_schema
+       AND policy.parent_table = candidate.parent_table
+       AND policy.child_schema = candidate.child_schema
+       AND policy.child_table = candidate.child_table
+       AND policy.constraint_name = candidate.constraint_name
+     WHERE policy.constraint_name IS NULL
+     ORDER BY
+        candidate.parent_schema,
+        candidate.parent_table,
+        candidate.child_schema,
+        candidate.child_table,
+        candidate.constraint_name
+     LIMIT 1;
 
-CREATE TABLE public.a2a_push_profile_t (
-    host_id uuid NOT NULL,
-    push_profile_id uuid NOT NULL,
-    environment character varying(32) NOT NULL,
-    profile_name character varying(126) NOT NULL,
-    maximum_attempts bigint NOT NULL,
-    initial_backoff_seconds bigint NOT NULL,
-    maximum_backoff_seconds bigint NOT NULL,
-    lease_seconds bigint NOT NULL,
-    request_timeout_ms bigint NOT NULL,
-    profile_state character varying(16) NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT a2a_push_profile_t_pkey PRIMARY KEY(host_id,push_profile_id),
-    CONSTRAINT a2a_push_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
-    CONSTRAINT a2a_push_profile_name_uk UNIQUE(host_id,environment,profile_name),
-    CONSTRAINT a2a_push_profile_bounds_ck CHECK(maximum_attempts BETWEEN 1 AND 100 AND initial_backoff_seconds BETWEEN 1 AND 86400 AND maximum_backoff_seconds BETWEEN initial_backoff_seconds AND 86400 AND lease_seconds BETWEEN 1 AND 300 AND request_timeout_ms BETWEEN 1 AND 300000 AND request_timeout_ms + 5000 <= lease_seconds * 1000),
-    CONSTRAINT a2a_push_profile_state_ck CHECK(profile_state IN ('APPROVED','DISABLED')),
-    CONSTRAINT a2a_push_profile_version_ck CHECK(aggregate_version>0)
-);
+    IF FOUND THEN
+        RAISE EXCEPTION
+            'unclassified cascade relationship: %.% -> %.% (%)',
+            unclassified_relationship.parent_schema,
+            unclassified_relationship.parent_table,
+            unclassified_relationship.child_schema,
+            unclassified_relationship.child_table,
+            unclassified_relationship.constraint_name;
+    END IF;
+END;
+$function$;
+CREATE OR REPLACE FUNCTION public.smart_cascade_delete()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+    relationship RECORD;
+    where_clause TEXT;
+    query_text TEXT;
+    column_index INTEGER;
+    deletion_context_token TEXT;
+    delete_timestamp TIMESTAMP WITH TIME ZONE;
+BEGIN
+    IF NEW.active = FALSE AND OLD.active = TRUE THEN
+        delete_timestamp := CURRENT_TIMESTAMP;
+        FOR relationship IN
+            SELECT *
+            FROM cascade_relationships_v
+            WHERE parent_schema = TG_TABLE_SCHEMA
+              AND parent_table = TG_TABLE_NAME
+            ORDER BY constraint_name
+            LOOP
+            where_clause := '';
 
-CREATE TABLE public.a2a_callback_registration_t (
-    host_id uuid NOT NULL,
-    callback_registration_id uuid NOT NULL,
-    push_profile_id uuid NOT NULL,
-    registration_name character varying(126) NOT NULL,
-    callback_url character varying(2048) NOT NULL,
-    owner_principal_prefixes jsonb NOT NULL,
-    hmac_key_file character varying(1024) NOT NULL,
-    registration_state character varying(16) NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT a2a_callback_registration_t_pkey PRIMARY KEY(host_id,callback_registration_id),
-    CONSTRAINT a2a_callback_registration_profile_fk FOREIGN KEY(host_id,push_profile_id) REFERENCES public.a2a_push_profile_t(host_id,push_profile_id) ON DELETE CASCADE,
-    CONSTRAINT a2a_callback_registration_name_uk UNIQUE(host_id,push_profile_id,registration_name),
-    CONSTRAINT a2a_callback_registration_url_uk UNIQUE(host_id,push_profile_id,callback_url),
-    CONSTRAINT a2a_callback_registration_url_ck CHECK(callback_url ~ '^https://[^[:space:]?#]+(/[^[:space:]?#]*)?$'),
-    CONSTRAINT a2a_callback_registration_owner_ck CHECK(jsonb_typeof(owner_principal_prefixes)='array' AND jsonb_array_length(owner_principal_prefixes)>0),
-    CONSTRAINT a2a_callback_registration_key_ck CHECK(hmac_key_file ~ '^/[^[:space:]]+$' AND hmac_key_file !~* '(password=|secret=|-----BEGIN)'),
-    CONSTRAINT a2a_callback_registration_state_ck CHECK(registration_state IN ('APPROVED','DISABLED')),
-    CONSTRAINT a2a_callback_registration_version_ck CHECK(aggregate_version>0)
-);
+            FOR column_index IN 1..relationship.column_count LOOP
+                IF column_index > 1 THEN
+                    where_clause := where_clause || ' AND ';
+                END IF;
 
-CREATE TABLE public.a2a_artifact_retention_profile_t (
-    host_id uuid NOT NULL,
-    retention_profile_id uuid NOT NULL,
-    profile_name character varying(126) NOT NULL,
-    task_retention_days integer NOT NULL,
-    artifact_retention_days integer NOT NULL,
-    maximum_artifact_bytes bigint NOT NULL,
-    access_policy_ref character varying(256) NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT a2a_artifact_retention_profile_t_pkey PRIMARY KEY(host_id,retention_profile_id),
-    CONSTRAINT a2a_artifact_retention_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
-    CONSTRAINT a2a_artifact_retention_name_uk UNIQUE(host_id,profile_name),
-    CONSTRAINT a2a_artifact_retention_bounds_ck CHECK(task_retention_days BETWEEN 1 AND 3650 AND artifact_retention_days BETWEEN 1 AND 3650 AND maximum_artifact_bytes BETWEEN 1 AND 1099511627776),
-    CONSTRAINT a2a_artifact_retention_policy_ck CHECK(length(btrim(access_policy_ref))>0),
-    CONSTRAINT a2a_artifact_retention_version_ck CHECK(aggregate_version>0)
-);
+                where_clause := where_clause || format(
+                    '%I = ($1).%I',
+                    relationship.child_columns[column_index],
+                    relationship.parent_columns[column_index]
+                );
+            END LOOP;
 
-CREATE TABLE public.a2a_signing_profile_t (
-    host_id uuid NOT NULL,
-    signing_profile_id uuid NOT NULL,
-    environment character varying(32) NOT NULL,
-    profile_name character varying(126) NOT NULL,
-    purpose character varying(32) NOT NULL,
-    algorithm character varying(16) NOT NULL,
-    jwks_url character varying(1024) NOT NULL,
-    managed_key_alias character varying(512) NOT NULL,
-    rotation_policy jsonb DEFAULT '{}'::jsonb NOT NULL,
-    revocation_epoch bigint DEFAULT 0 NOT NULL,
-    is_default boolean DEFAULT false NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT a2a_signing_profile_t_pkey PRIMARY KEY(host_id,signing_profile_id),
-    CONSTRAINT a2a_signing_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
-    CONSTRAINT a2a_signing_profile_name_uk UNIQUE(host_id,environment,profile_name),
-    CONSTRAINT a2a_signing_profile_purpose_ck CHECK(purpose IN ('A2A_CARD_NATIVE','A2A_CARD_EXTERNAL_FACADE')),
-    CONSTRAINT a2a_signing_profile_algorithm_ck CHECK(algorithm='RS256'),
-    CONSTRAINT a2a_signing_profile_jwks_ck CHECK(jwks_url ~ '^https://'),
-    CONSTRAINT a2a_signing_profile_alias_ck CHECK(length(btrim(managed_key_alias))>0 AND managed_key_alias !~* '(private.?key|password|secret=|-----BEGIN)'),
-    CONSTRAINT a2a_signing_profile_rotation_ck CHECK(jsonb_typeof(rotation_policy)='object'),
-    CONSTRAINT a2a_signing_profile_version_ck CHECK(revocation_epoch>=0 AND aggregate_version>0)
-);
-CREATE UNIQUE INDEX a2a_signing_profile_default_uk ON public.a2a_signing_profile_t(host_id,environment,purpose) WHERE active AND is_default;
+            deletion_context_token := md5(format(
+                '%s.%s:%s',
+                relationship.parent_schema,
+                relationship.parent_table,
+                relationship.constraint_name
+            ));
 
-CREATE TABLE public.a2a_signing_key_t (
-    host_id uuid NOT NULL,
-    signing_profile_id uuid NOT NULL,
-    kid character varying(256) NOT NULL,
-    public_jwk jsonb NOT NULL,
-    private_key_ref character varying(1024) NOT NULL,
-    key_state character varying(16) NOT NULL,
-    valid_from timestamp with time zone NOT NULL,
-    valid_until timestamp with time zone,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT a2a_signing_key_t_pkey PRIMARY KEY(host_id,signing_profile_id,kid),
-    CONSTRAINT a2a_signing_key_profile_fk FOREIGN KEY(host_id,signing_profile_id) REFERENCES public.a2a_signing_profile_t(host_id,signing_profile_id) ON DELETE CASCADE,
-    CONSTRAINT a2a_signing_key_public_ck CHECK(jsonb_typeof(public_jwk)='object' AND public_jwk->>'kid'=kid AND public_jwk->>'kty'='RSA' AND public_jwk->>'alg'='RS256' AND length(COALESCE(public_jwk->>'n',''))>0 AND length(COALESCE(public_jwk->>'e',''))>0),
-    CONSTRAINT a2a_signing_key_private_ref_ck CHECK(private_key_ref ~ '^managed:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'),
-    CONSTRAINT a2a_signing_key_state_ck CHECK(key_state IN ('CURRENT','PREVIOUS','REVOKED')),
-    CONSTRAINT a2a_signing_key_validity_ck CHECK(valid_until IS NULL OR valid_until>valid_from),
-    CONSTRAINT a2a_signing_key_version_ck CHECK(aggregate_version>0)
-);
-CREATE UNIQUE INDEX a2a_signing_key_current_uk ON public.a2a_signing_key_t(host_id,signing_profile_id) WHERE active AND key_state='CURRENT';
+            IF relationship.delete_action = 'SOFT_DELETE' THEN
+                query_text := format(
+                    'UPDATE %I.%I
+                        SET active = FALSE,
+                            delete_ts = CASE WHEN active THEN $2 ELSE delete_ts END,
+                            delete_user = CASE
+                                WHEN active THEN ''PARENT_CASCADE:'' || $3
+                                WHEN NOT ($3 = ANY(string_to_array(substring(delete_user FROM 16), '','')))
+                                    THEN delete_user || '','' || $3
+                                ELSE delete_user
+                            END,
+                            update_ts = $2,
+                            update_user = $4
+                      WHERE %s
+                        AND (
+                            active = TRUE
+                            OR left(delete_user, 15) = ''PARENT_CASCADE:''
+                        )',
+                    relationship.child_schema,
+                    relationship.child_table,
+                    where_clause
+                );
 
-CREATE TABLE public.skill_publication_alias_t (
-    host_id uuid NOT NULL,
-    publication_alias character varying(128) NOT NULL,
-    skill_id uuid NOT NULL,
-    skill_version character varying(20) NOT NULL,
-    skill_digest character varying(71) NOT NULL,
-    first_publication_id uuid,
-    frozen boolean DEFAULT false NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT skill_publication_alias_t_pkey PRIMARY KEY(host_id,publication_alias),
-    CONSTRAINT skill_publication_alias_skill_fk FOREIGN KEY(host_id,skill_id) REFERENCES public.skill_t(host_id,skill_id) ON DELETE RESTRICT,
-    CONSTRAINT skill_publication_alias_skill_uk UNIQUE(host_id,skill_id),
-    CONSTRAINT skill_publication_alias_shape_ck CHECK(publication_alias ~ '^[a-z0-9][a-z0-9._-]{0,127}$'),
-    CONSTRAINT skill_publication_alias_digest_ck CHECK(skill_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT skill_publication_alias_version_ck CHECK(aggregate_version>0)
-);
+                EXECUTE query_text
+                    USING OLD, delete_timestamp, deletion_context_token, current_user;
+            ELSIF relationship.delete_action = 'HARD_DELETE' THEN
+                query_text := format(
+                    'DELETE FROM %I.%I WHERE %s',
+                    relationship.child_schema,
+                    relationship.child_table,
+                    where_clause
+                );
 
-ALTER TABLE public.agent_a2a_binding_t
-    ADD COLUMN public_metadata_id uuid,
-    ADD COLUMN retention_profile_id uuid,
-    ADD COLUMN signing_profile_id uuid,
-    ADD COLUMN allowed_hosts jsonb NOT NULL,
-    ADD COLUMN retention_override jsonb DEFAULT '{}'::jsonb NOT NULL,
-    ADD COLUMN extension_ids jsonb DEFAULT '[]'::jsonb NOT NULL,
-    ADD COLUMN extended_card_profile_id uuid,
-    ADD COLUMN push_profile_id uuid,
-    ADD CONSTRAINT agent_a2a_binding_public_metadata_fk FOREIGN KEY(host_id,public_metadata_id) REFERENCES public.agent_a2a_public_metadata_t(host_id,public_metadata_id) ON DELETE RESTRICT,
-    ADD CONSTRAINT agent_a2a_binding_retention_profile_fk FOREIGN KEY(host_id,retention_profile_id) REFERENCES public.a2a_artifact_retention_profile_t(host_id,retention_profile_id) ON DELETE RESTRICT,
-    ADD CONSTRAINT agent_a2a_binding_signing_profile_fk FOREIGN KEY(host_id,signing_profile_id) REFERENCES public.a2a_signing_profile_t(host_id,signing_profile_id) ON DELETE RESTRICT,
-    ADD CONSTRAINT agent_a2a_binding_extended_card_profile_fk FOREIGN KEY(host_id,extended_card_profile_id) REFERENCES public.a2a_extended_card_profile_t(host_id,extended_card_profile_id) ON DELETE RESTRICT,
-    ADD CONSTRAINT agent_a2a_binding_push_profile_fk FOREIGN KEY(host_id,push_profile_id) REFERENCES public.a2a_push_profile_t(host_id,push_profile_id) ON DELETE RESTRICT,
-    ADD CONSTRAINT agent_a2a_binding_retention_override_ck CHECK(jsonb_typeof(retention_override)='object'),
-    ADD CONSTRAINT agent_a2a_binding_allowed_hosts_ck CHECK(jsonb_typeof(allowed_hosts)='array' AND jsonb_array_length(allowed_hosts) BETWEEN 1 AND 32),
-    ADD CONSTRAINT agent_a2a_binding_extensions_ck CHECK(jsonb_typeof(extension_ids)='array' AND jsonb_array_length(extension_ids)<=8);
+                EXECUTE query_text USING OLD;
+            END IF;
+        END LOOP;
+    ELSIF NEW.active = TRUE AND OLD.active = FALSE THEN
+        FOR relationship IN
+            SELECT *
+            FROM cascade_relationships_v
+            WHERE parent_schema = TG_TABLE_SCHEMA
+              AND parent_table = TG_TABLE_NAME
+              AND delete_action = 'SOFT_DELETE'
+              AND restore_action = 'RESTORE'
+            ORDER BY constraint_name
+            LOOP
+            where_clause := '';
 
-INSERT INTO public.cascade_relationship_policy_t (
-    parent_schema,parent_table,child_schema,child_table,constraint_name,delete_action,restore_action,policy_description
-) VALUES
-    ('public','host_t','public','a2a_provider_profile_t','a2a_provider_profile_host_fk','IGNORE','NONE','A2A provider profiles are command-owned host records'),
-    ('public','host_t','public','a2a_extension_t','a2a_extension_host_fk','IGNORE','NONE','A2A extension registry is command-owned host state'),
-    ('public','host_t','public','a2a_artifact_retention_profile_t','a2a_artifact_retention_host_fk','IGNORE','NONE','A2A retention profiles are command-owned host state'),
-    ('public','host_t','public','a2a_signing_profile_t','a2a_signing_profile_host_fk','IGNORE','NONE','A2A signing profiles are command-owned host state')
-    ,('public','host_t','public','a2a_extended_card_profile_t','a2a_extended_card_profile_host_fk','IGNORE','NONE','A2A extended-card profiles are command-owned host state')
-    ,('public','host_t','public','a2a_push_profile_t','a2a_push_profile_host_fk','IGNORE','NONE','A2A push profiles are command-owned host state')
-    ,('public','a2a_push_profile_t','public','a2a_callback_registration_t','a2a_callback_registration_profile_fk','IGNORE','NONE','Callback registrations are separately command-owned; the FK cascade is reset-only')
-ON CONFLICT (parent_schema,parent_table,child_schema,child_table,constraint_name) DO UPDATE SET
-    delete_action=EXCLUDED.delete_action,restore_action=EXCLUDED.restore_action,
-    policy_description=EXCLUDED.policy_description,update_user=SESSION_USER,update_ts=CURRENT_TIMESTAMP;
+            FOR column_index IN 1..relationship.column_count LOOP
+                IF column_index > 1 THEN
+                    where_clause := where_clause || ' AND ';
+                END IF;
 
-COMMENT ON TABLE public.a2a_provider_profile_t IS 'Reusable Portal-authored public provider identity for Agent Cards.';
-COMMENT ON TABLE public.agent_a2a_public_metadata_t IS 'Version-scoped Agent Card metadata overrides with source provenance.';
-COMMENT ON TABLE public.a2a_extension_t IS 'Managed A2A extension registry; Phase 6 permits only reviewed OPTIONAL_DATA activation.';
-COMMENT ON TABLE public.a2a_extended_card_profile_t IS 'Independently authorized and signed extended Agent Card disclosure profile.';
-COMMENT ON TABLE public.a2a_push_profile_t IS 'Bounded retry and lease policy for governed A2A push delivery.';
-COMMENT ON TABLE public.a2a_callback_registration_t IS 'Approved callback destination and server-owned HMAC key-file reference; callers cannot add destinations.';
-COMMENT ON TABLE public.a2a_artifact_retention_profile_t IS 'Host-scoped A2A task and artifact retention policy linked to existing fine-grained access policy.';
-COMMENT ON TABLE public.a2a_signing_profile_t IS 'Purpose-separated A2A Agent Card issuer identity; OAuth token keys are never eligible.';
-COMMENT ON TABLE public.a2a_signing_key_t IS 'Public key lifecycle and private-key provider reference for an A2A signing profile.';
-COMMENT ON TABLE public.skill_publication_alias_t IS 'Stable opaque public Skill identity immutably mapped to one Portal Skill.';
+                where_clause := where_clause || format(
+                    '%I = ($1).%I',
+                    relationship.child_columns[column_index],
+                    relationship.parent_columns[column_index]
+                );
+            END LOOP;
 
--- Phase 3: approved fixed-loopback transport profiles for external business
--- agents. Secret material is mounted at runtime; only a secret file reference
--- is control-plane state.
-CREATE TABLE public.a2a_backend_transport_profile_t (
-    host_id uuid NOT NULL,
-    backend_transport_profile_id uuid NOT NULL,
-    environment character varying(32) NOT NULL,
-    profile_name character varying(128) NOT NULL,
-    contract_version character varying(64) NOT NULL,
-    contract_digest character varying(71) NOT NULL,
-    loopback_origin character varying(256) NOT NULL,
-    audience character varying(256) NOT NULL,
-    context_key_file character varying(512) NOT NULL,
-    data_boundary_digest character varying(71) NOT NULL,
-    request_timeout_ms bigint NOT NULL,
-    maximum_request_bytes bigint NOT NULL,
-    maximum_response_bytes bigint NOT NULL,
-    capabilities jsonb NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT a2a_backend_transport_profile_t_pkey PRIMARY KEY(host_id,backend_transport_profile_id),
-    CONSTRAINT a2a_backend_transport_profile_host_fk FOREIGN KEY(host_id) REFERENCES public.host_t(host_id) ON DELETE CASCADE,
-    CONSTRAINT a2a_backend_transport_profile_name_uk UNIQUE(host_id,environment,profile_name),
-    CONSTRAINT a2a_backend_transport_profile_contract_ck CHECK(contract_version='light-a2a-backend/v1' AND contract_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT a2a_backend_transport_profile_origin_ck CHECK(
-        loopback_origin ~ '^http://(127\.0\.0\.1|localhost|\[::1\]):[1-9][0-9]{0,4}/$'
-        AND (substring(loopback_origin FROM ':([0-9]{1,5})/$'))::integer BETWEEN 1 AND 65535
-    ),
-    CONSTRAINT a2a_backend_transport_profile_key_ck CHECK(context_key_file ~ '^/run/secrets/[A-Za-z0-9._-]+$' AND context_key_file !~ '(^|/)\.\.(/|$)'),
-    CONSTRAINT a2a_backend_transport_profile_boundary_ck CHECK(data_boundary_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT a2a_backend_transport_profile_limit_ck CHECK(request_timeout_ms BETWEEN 100 AND 300000 AND maximum_request_bytes BETWEEN 1 AND 16777216 AND maximum_response_bytes BETWEEN 1 AND 67108864),
-    CONSTRAINT a2a_backend_transport_profile_capabilities_ck CHECK(
-      jsonb_typeof(capabilities)='object'
-      AND capabilities ?& ARRAY['contractVersion','streaming','cancellation','statusReconciliation','acceptedContentModes','maximumArtifactBytes']
-      AND capabilities - ARRAY['contractVersion','streaming','cancellation','statusReconciliation','acceptedContentModes','maximumArtifactBytes']='{}'::jsonb
-      AND capabilities->>'contractVersion'='light-a2a-backend/v1'
-      AND jsonb_typeof(capabilities->'streaming')='boolean'
-      AND jsonb_typeof(capabilities->'cancellation')='boolean'
-      AND jsonb_typeof(capabilities->'statusReconciliation')='boolean'
-      AND jsonb_typeof(capabilities->'acceptedContentModes')='array'
-      AND jsonb_array_length(capabilities->'acceptedContentModes') BETWEEN 1 AND 16
-      AND jsonb_typeof(capabilities->'maximumArtifactBytes')='number'
-      AND (capabilities->>'maximumArtifactBytes')::numeric BETWEEN 1 AND 1099511627776),
-    CONSTRAINT a2a_backend_transport_profile_version_ck CHECK(aggregate_version>0)
-);
+            deletion_context_token := md5(format(
+                '%s.%s:%s',
+                relationship.parent_schema,
+                relationship.parent_table,
+                relationship.constraint_name
+            ));
 
-ALTER TABLE public.agent_a2a_binding_t
-    ADD COLUMN backend_transport_profile_id uuid;
-ALTER TABLE public.agent_a2a_binding_t
-    ADD CONSTRAINT agent_a2a_binding_backend_transport_fk
-    FOREIGN KEY(host_id,backend_transport_profile_id)
-    REFERENCES public.a2a_backend_transport_profile_t(host_id,backend_transport_profile_id) ON DELETE RESTRICT;
-ALTER TABLE public.agent_a2a_binding_t
-    ADD CONSTRAINT agent_a2a_binding_backend_transport_ck CHECK(
-        (implementation_kind='EXTERNAL_SIDECAR' AND backend_transport_profile_id IS NOT NULL)
-        OR (implementation_kind<>'EXTERNAL_SIDECAR' AND backend_transport_profile_id IS NULL));
+            query_text := format(
+                'UPDATE %I.%I
+                    SET active = CASE
+                            WHEN left(delete_user, 15) = ''PARENT_CASCADE:''
+                                THEN cardinality(array_remove(
+                                    string_to_array(substring(delete_user FROM 16), '',''), $2
+                                )) = 0
+                            ELSE TRUE
+                        END,
+                        delete_ts = CASE
+                            WHEN left(delete_user, 15) = ''PARENT_CASCADE:''
+                             AND cardinality(array_remove(
+                                    string_to_array(substring(delete_user FROM 16), '',''), $2
+                                 )) > 0
+                                THEN delete_ts
+                            ELSE NULL
+                        END,
+                        delete_user = CASE
+                            WHEN left(delete_user, 15) = ''PARENT_CASCADE:''
+                             AND cardinality(array_remove(
+                                    string_to_array(substring(delete_user FROM 16), '',''), $2
+                                 )) > 0
+                                THEN ''PARENT_CASCADE:'' || array_to_string(
+                                    array_remove(string_to_array(substring(delete_user FROM 16), '',''), $2), '',''
+                                )
+                            ELSE NULL
+                        END,
+                        update_ts = CURRENT_TIMESTAMP,
+                        update_user = $3
+                  WHERE %s
+                    AND active = FALSE
+                    AND (
+                        (
+                            left(delete_user, 15) = ''PARENT_CASCADE:''
+                            AND $2 = ANY(string_to_array(substring(delete_user FROM 16), '',''))
+                        )
+                        OR left(delete_user, length($4)) = $4
+                    )',
+                relationship.child_schema,
+                relationship.child_table,
+                where_clause
+            );
 
-INSERT INTO public.cascade_relationship_policy_t (
-    parent_schema,parent_table,child_schema,child_table,constraint_name,
-    delete_action,restore_action,policy_description
-) VALUES
-    ('public','host_t','public','a2a_backend_transport_profile_t','a2a_backend_transport_profile_host_fk','IGNORE','NONE','A2A backend transport profiles are command-owned host state'),
-    ('public','a2a_backend_transport_profile_t','public','agent_a2a_binding_t','agent_a2a_binding_backend_transport_fk','IGNORE','NONE','Active A2A bindings retain their approved backend transport profile')
+            EXECUTE query_text
+                USING OLD, deletion_context_token, current_user,
+                    'PARENT_CASCADE_' || TG_TABLE_NAME || '_';
+        END LOOP;
+    END IF;
+
+    RETURN NEW;
+END;
+$function$;
+DO $legacy_policy_shape$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+        AND table_name='cascade_relationship_policy_t' AND column_name='enabled') THEN
+        DROP VIEW cascade_relationships_v;
+        ALTER TABLE cascade_relationship_policy_t DROP COLUMN enabled;
+    END IF;
+END
+$legacy_policy_shape$;
+CREATE OR REPLACE VIEW public.cascade_relationships_v AS WITH fk_details AS (
+         SELECT pn.nspname::text AS parent_schema,
+            pc.relname::text AS parent_table,
+            cn.nspname::text AS child_schema,
+            cc.relname::text AS child_table,
+            c.conname::text AS constraint_name,
+            c.oid AS constraint_id,
+            cc.oid AS child_table_oid,
+            pc.oid AS parent_table_oid,
+            c.confdeltype,
+            array_agg(pa.attname::text ORDER BY keys.ord) AS parent_columns,
+            array_agg(ca.attname::text ORDER BY keys.ord) AS child_columns,
+            count(*)::integer AS column_count
+           FROM pg_constraint c
+             JOIN pg_class pc ON pc.oid = c.confrelid
+             JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+             JOIN pg_class cc ON cc.oid = c.conrelid
+             JOIN pg_namespace cn ON cn.oid = cc.relnamespace
+             JOIN LATERAL UNNEST(c.confkey, c.conkey) WITH ORDINALITY keys(parent_attnum, child_attnum, ord) ON true
+             JOIN pg_attribute pa ON pa.attrelid = pc.oid AND pa.attnum = keys.parent_attnum AND NOT pa.attisdropped
+             JOIN pg_attribute ca ON ca.attrelid = cc.oid AND ca.attnum = keys.child_attnum AND NOT ca.attisdropped
+          WHERE c.contype = 'f'::"char"
+          GROUP BY pn.nspname, pc.relname, cn.nspname, cc.relname, c.conname, c.oid, cc.oid, pc.oid, c.confdeltype
+        )
+ SELECT fk.parent_schema,
+    fk.parent_table,
+    fk.child_schema,
+    fk.child_table,
+    fk.constraint_name,
+    fk.constraint_id,
+    fk.parent_columns,
+    fk.child_columns,
+    fk.column_count,
+    fk.child_table_oid,
+    fk.parent_table_oid,
+        CASE fk.confdeltype
+            WHEN 'a'::"char" THEN 'NO ACTION'::text
+            WHEN 'r'::"char" THEN 'RESTRICT'::text
+            WHEN 'c'::"char" THEN 'CASCADE'::text
+            WHEN 'n'::"char" THEN 'SET NULL'::text
+            WHEN 'd'::"char" THEN 'SET DEFAULT'::text
+            ELSE 'UNKNOWN'::text
+        END AS foreign_key_delete_action,
+    policy.delete_action,
+    policy.restore_action,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.parent_table_oid AND a.attname = 'active'::name AND NOT a.attisdropped)) AS parent_has_active,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.parent_table_oid AND a.attname = 'delete_ts'::name AND NOT a.attisdropped)) AS parent_has_delete_ts,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.parent_table_oid AND a.attname = 'delete_user'::name AND NOT a.attisdropped)) AS parent_has_delete_user,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.parent_table_oid AND a.attname = 'update_ts'::name AND NOT a.attisdropped)) AS parent_has_update_ts,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.parent_table_oid AND a.attname = 'update_user'::name AND NOT a.attisdropped)) AS parent_has_update_user,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.child_table_oid AND a.attname = 'active'::name AND NOT a.attisdropped)) AS child_has_active,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.child_table_oid AND a.attname = 'delete_ts'::name AND NOT a.attisdropped)) AS child_has_delete_ts,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.child_table_oid AND a.attname = 'delete_user'::name AND NOT a.attisdropped)) AS child_has_delete_user,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.child_table_oid AND a.attname = 'update_ts'::name AND NOT a.attisdropped)) AS child_has_update_ts,
+    (EXISTS ( SELECT 1
+           FROM pg_attribute a
+          WHERE a.attrelid = fk.child_table_oid AND a.attname = 'update_user'::name AND NOT a.attisdropped)) AS child_has_update_user
+   FROM fk_details fk
+     JOIN cascade_relationship_policy_t policy ON policy.parent_schema::text = fk.parent_schema AND policy.parent_table::text = fk.parent_table AND policy.child_schema::text = fk.child_schema AND policy.child_table::text = fk.child_table AND policy.constraint_name::text = fk.constraint_name;
+COMMENT ON VIEW public.cascade_relationships_v IS '';
+CREATE TEMP TABLE cascade_relationship_policy_seed_t (LIKE public.cascade_relationship_policy_t INCLUDING DEFAULTS) ON COMMIT DROP;
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'a2a_backend_transport_profile_t', 'public', 'agent_a2a_binding_t', 'agent_a2a_binding_backend_transport_fk', 'IGNORE', 'NONE', 'Active A2A bindings retain their approved backend transport profile', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'a2a_push_profile_t', 'public', 'a2a_callback_registration_t', 'a2a_callback_registration_profile_fk', 'IGNORE', 'NONE', 'Callback registrations are separately command-owned; the FK cascade is reset-only', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'access_target_t', 'public', 'access_target_col_filter_t', 'access_target_col_filter_t_host_id_access_target_id_fkey', 'IGNORE', 'NONE', 'Access-target column-filter lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'access_target_t', 'public', 'access_target_permission_t', 'access_target_permission_t_host_id_access_target_id_fkey', 'IGNORE', 'NONE', 'Access-target permission lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'access_target_t', 'public', 'access_target_row_filter_t', 'access_target_row_filter_t_host_id_access_target_id_fkey', 'IGNORE', 'NONE', 'Access-target row-filter lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'access_target_t', 'public', 'access_target_rule_t', 'access_target_rule_t_host_id_access_target_id_fkey', 'IGNORE', 'NONE', 'Access-target rule lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_scope_t', 'public', 'app_api_t', 'app_api_t_host_id_endpoint_id_scope_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'api_endpoint_rule_t', 'endpoint_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'api_endpoint_scope_t', 'api_ver_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'attribute_col_filter_t', 'attribute_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'attribute_permission_t', 'attribute_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'attribute_row_filter_t', 'attribute_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'gateway_tool_binding_t', 'gateway_tool_binding_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'group_col_filter_t', 'group_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'group_permission_t', 'group_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'group_row_filter_t', 'group_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'position_col_filter_t', 'position_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'position_permission_t', 'position_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'position_row_filter_t', 'position_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'role_col_filter_t', 'role_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'role_permission_t', 'role_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'role_row_filter_t', 'role_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'tool_t', 'tool_t_host_id_endpoint_id_fkey', 'IGNORE', 'NONE', 'Tool lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'user_col_filter_t', 'user_col_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'user_permission_t', 'user_permission_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_endpoint_t', 'public', 'user_row_filter_t', 'user_row_filter_t_host_id_endpoint_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_t', 'public', 'api_version_t', 'api_version_t_host_id_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_t', 'public', 'auth_provider_api_t', 'auth_provider_api_t_host_id_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_version_t', 'public', 'agent_definition_t', 'agent_definition_api_version_fk', 'IGNORE', 'NONE', 'Agent definition lifecycle is command-owned and independently audited', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_version_t', 'public', 'api_endpoint_t', 'api_endpoint_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_version_t', 'public', 'auth_client_owner_t', 'auth_client_owner_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_version_t', 'public', 'auth_client_t', 'auth_client_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_version_t', 'public', 'gateway_tool_binding_t', 'gateway_tool_binding_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_version_t', 'public', 'gateway_tool_publication_t', 'gateway_tool_publication_t_host_id_scope_api_version_id_fkey', 'IGNORE', 'NONE', 'Publication lifecycle is immutable and command-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'api_version_t', 'public', 'instance_api_t', 'instance_api_t_host_id_api_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'app_t', 'public', 'app_api_t', 'app_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'app_t', 'public', 'auth_client_owner_t', 'auth_client_owner_t_host_id_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'app_t', 'public', 'auth_client_t', 'auth_client_t_host_id_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'app_t', 'public', 'instance_app_t', 'instance_app_t_host_id_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'attribute_t', 'public', 'attribute_col_filter_t', 'attribute_col_filter_t_host_id_attribute_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'attribute_t', 'public', 'attribute_permission_t', 'attribute_permission_t_host_id_attribute_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'attribute_t', 'public', 'attribute_row_filter_t', 'attribute_row_filter_t_host_id_attribute_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'attribute_t', 'public', 'attribute_user_t', 'attribute_user_t_host_id_attribute_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_owner_t', 'public', 'auth_client_t', 'auth_client_t_host_id_owner_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_t', 'public', 'auth_client_token_t', 'auth_client_token_t_host_id_client_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable authentication runtime state', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_t', 'public', 'auth_provider_client_t', 'auth_provider_client_t_host_id_client_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_t', 'public', 'auth_ref_token_t', 'auth_ref_token_t_host_id_client_id_fkey', 'HARD_DELETE', 'NONE', 'Client deactivation revokes stored bearer JWT reference tokens', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_provider_client_t', 'public', 'auth_code_t', 'auth_code_t_auth_host_id_client_id_provider_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable authentication runtime state', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_provider_client_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_auth_host_id_client_id_provider_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable authentication runtime state', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_provider_client_t', 'public', 'auth_session_t', 'auth_session_t_auth_host_id_client_id_provider_id_fkey', 'HARD_DELETE', 'NONE', 'Provider-client retirement revokes non-restorable authorization sessions', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_provider_t', 'public', 'auth_provider_api_t', 'auth_provider_api_t_host_id_provider_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_provider_t', 'public', 'auth_provider_client_t', 'auth_provider_client_t_host_id_provider_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_provider_t', 'public', 'auth_provider_key_t', 'auth_provider_key_t_host_id_provider_id_fkey', 'IGNORE', 'NONE', 'Preserve keys across parent-driven provider retirement; runtime requires an active provider', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'category_t', 'public', 'category_t', 'category_t_parent_category_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'category_t', 'public', 'entity_category_t', 'entity_category_t_category_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_profile_t', 'public', 'config_profile_config_t', 'config_profile_config_t_profile_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_profile_t', 'public', 'config_profile_property_t', 'config_profile_property_t_profile_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_profile_t', 'public', 'product_version_config_profile_t', 'product_version_config_profile_t_profile_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'config_profile_property_t', 'config_profile_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'deployment_instance_property_t', 'deployment_instance_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'environment_property_t', 'environment_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'gateway_tool_publication_t', 'gateway_tool_publication_t_property_id_fkey', 'IGNORE', 'NONE', 'Publication lifecycle is immutable and command-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'instance_api_property_t', 'instance_api_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'instance_app_api_property_t', 'config_property_fk1', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'instance_app_property_t', 'instance_app_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'instance_property_t', 'config_property_fkv1', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'llm_gateway_instance_property_ownership_t', 'llm_gateway_instance_property_ownership_t_property_id_fkey', 'IGNORE', 'NONE', 'Ownership lifecycle is release-managed and lacks the soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'product_property_t', 'config_property_fkv2', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'product_version_config_property_t', 'product_version_config_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_property_t', 'public', 'product_version_property_t', 'product_version_property_t_property_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_t', 'public', 'chain_handler_t', 'configuration_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_t', 'public', 'config_profile_config_t', 'config_profile_config_t_config_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_t', 'public', 'config_property_t', 'config_fkv2', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'config_t', 'public', 'product_version_config_t', 'product_version_config_t_config_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'customer_t', 'public', 'customer_t', 'customer_t_host_id_referral_id_fkey', 'IGNORE', 'NONE', 'Referral topology does not own customer identity lifecycle', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'deployment_instance_t', 'public', 'deployment_instance_property_t', 'deployment_instance_property__host_id_deployment_instance__fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'deployment_instance_t', 'public', 'deployment_t', 'deployment_t_host_id_deployment_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'deployment_t', 'public', 'config_snapshot_t', 'config_snapshot_t_host_id_deployment_id_fkey', 'IGNORE', 'NONE', 'Immutable configuration snapshots are retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'employee_t', 'public', 'employee_t', 'employee_t_host_id_manager_id_fkey', 'IGNORE', 'NONE', 'Management topology does not own employee identity lifecycle', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'group_t', 'public', 'group_col_filter_t', 'group_col_filter_t_host_id_group_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'group_t', 'public', 'group_permission_t', 'group_permission_t_host_id_group_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'group_t', 'public', 'group_row_filter_t', 'group_row_filter_t_host_id_group_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'group_t', 'public', 'group_user_t', 'group_user_t_host_id_group_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'a2a_artifact_retention_profile_t', 'a2a_artifact_retention_host_fk', 'IGNORE', 'NONE', 'A2A retention profiles are command-owned host state', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'a2a_backend_transport_profile_t', 'a2a_backend_transport_profile_host_fk', 'IGNORE', 'NONE', 'A2A backend transport profiles are command-owned host state', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'a2a_extended_card_profile_t', 'a2a_extended_card_profile_host_fk', 'IGNORE', 'NONE', 'A2A extended-card profiles are command-owned host state', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'a2a_extension_t', 'a2a_extension_host_fk', 'IGNORE', 'NONE', 'A2A extension registry is command-owned host state', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'a2a_provider_profile_t', 'a2a_provider_profile_host_fk', 'IGNORE', 'NONE', 'A2A provider profiles are command-owned host records', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'a2a_push_profile_t', 'a2a_push_profile_host_fk', 'IGNORE', 'NONE', 'A2A push profiles are command-owned host state', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'a2a_signing_profile_t', 'a2a_signing_profile_host_fk', 'IGNORE', 'NONE', 'A2A signing profiles are command-owned host state', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'agent_model_rate_t', 'agent_model_rate_t_host_id_fkey', 'IGNORE', 'NONE', 'Immutable agent model rate history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_client_owner_t', 'auth_client_owner_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_client_t', 'auth_client_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_code_t', 'auth_code_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes authorization codes even when auth_host_id differs', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_provider_t', 'auth_provider_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes refresh tokens even when auth_host_id differs', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_ref_token_t', 'auth_ref_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Host deactivation revokes stored bearer JWT reference tokens', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_session_audit_t', 'auth_session_audit_t_auth_host_id_fkey', 'IGNORE', 'NONE', 'Authentication audit history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_session_audit_t', 'auth_session_audit_t_host_id_fkey', 'IGNORE', 'NONE', 'Authentication audit history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_session_t', 'auth_session_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes non-restorable authorization sessions', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'config_snapshot_t', 'config_snapshot_t_host_id_fkey', 'IGNORE', 'NONE', 'Immutable configuration snapshots are retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'environment_property_t', 'host_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'event_failure_transaction_t', 'event_failure_transaction_host_fk', 'IGNORE', 'NONE', 'Failure evidence is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'event_projection_worker_t', 'event_projection_worker_host_fk', 'IGNORE', 'NONE', 'Projection worker lifecycle is operationally managed', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'event_replay_action_request_t', 'event_replay_action_request_host_fk', 'IGNORE', 'NONE', 'Replay action audit history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'event_replay_audit_t', 'event_replay_audit_host_fk', 'IGNORE', 'NONE', 'Replay audit history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'event_replay_request_t', 'event_replay_request_host_fk', 'IGNORE', 'NONE', 'Replay request lifecycle is operationally managed', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'event_replay_retention_log_t', 'event_replay_retention_log_host_fk', 'IGNORE', 'NONE', 'Retention audit history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'instance_clone_request_t', 'instance_clone_request_host_fk', 'IGNORE', 'NONE', 'Clone request lifecycle is command-owned and status-driven', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'instance_graph_revision_t', 'instance_graph_revision_host_fk', 'IGNORE', 'NONE', 'Graph revision coordination state is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'knowledge_base_import_t', 'knowledge_base_import_t_host_id_fkey', 'IGNORE', 'NONE', 'Knowledge import lifecycle is command-owned and status-driven', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'knowledge_base_manifest_export_t', 'knowledge_base_manifest_export_t_host_id_fkey', 'IGNORE', 'NONE', 'Knowledge export history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'knowledge_base_t', 'knowledge_base_t_host_id_fkey', 'IGNORE', 'NONE', 'Knowledge base lifecycle is command-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'knowledge_embedding_profile_t', 'knowledge_embedding_profile_t_host_id_fkey', 'IGNORE', 'NONE', 'Embedding profile lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'knowledge_ingestion_policy_t', 'knowledge_ingestion_policy_t_host_id_fkey', 'IGNORE', 'NONE', 'Ingestion policy lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'knowledge_retrieval_profile_t', 'knowledge_retrieval_profile_t_host_id_fkey', 'IGNORE', 'NONE', 'Retrieval profile lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'llm_gateway_publication_t', 'llm_gateway_publication_t_host_id_fkey', 'IGNORE', 'NONE', 'Publication lifecycle is immutable and command-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'llm_gateway_security_profile_t', 'llm_gateway_security_profile_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable host-owned gateway trust profile', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'llm_model_policy_t', 'llm_model_policy_t_host_id_fkey', 'IGNORE', 'NONE', 'Model policy lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'llm_model_registration_t', 'llm_model_registration_t_host_id_fkey', 'IGNORE', 'NONE', 'Model registration lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'llm_network_zone_t', 'llm_network_zone_t_host_id_fkey', 'IGNORE', 'NONE', 'Network-zone lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'llm_projection_resource_t', 'llm_projection_resource_t_host_id_fkey', 'IGNORE', 'NONE', 'Projection resources are immutable and release-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'llm_provider_account_t', 'llm_provider_account_t_host_id_fkey', 'IGNORE', 'NONE', 'Provider-account lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'llm_public_alias_t', 'llm_public_alias_t_host_id_fkey', 'IGNORE', 'NONE', 'Public-alias lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'message_t', 'message_host_fk', 'IGNORE', 'NONE', 'Message history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'notification_t', 'notification_t_host_id_fkey', 'IGNORE', 'NONE', 'Notification history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'pii_token_vault_t', 'pii_token_vault_t_host_id_fkey', 'IGNORE', 'NONE', 'PII vault records remain retained and access-controlled while a host is inactive', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'private_conversation_t', 'private_conversation_t_host_id_fkey', 'IGNORE', 'NONE', 'Conversation history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'product_version_t', 'host_id_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'role_t', 'role_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'skill_package_t', 'skill_package_t_host_id_fkey', 'IGNORE', 'NONE', 'Skill package lifecycle is command-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'user_host_t', 'user_host_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'workflow_endpoint_target_t', 'workflow_endpoint_target_t_host_id_fkey', 'IGNORE', 'NONE', 'Workflow endpoint lifecycle is command-owned until it implements the complete soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'workflow_execution_policy_t', 'workflow_execution_policy_t_host_id_fkey', 'IGNORE', 'NONE', 'Workflow execution policy lifecycle is command-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'workflow_executor_tenant_turn_t', 'workflow_executor_tenant_turn_t_host_id_fkey', 'IGNORE', 'NONE', 'Workflow executor turn history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_api_t', 'public', 'agent_a2a_binding_t', 'agent_a2a_binding_instance_agent_fk', 'IGNORE', 'NONE', 'A2A binding lifecycle is command-owned and independently audited', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_api_t', 'public', 'instance_api_path_prefix_t', 'instance_api_path_prefix_t_host_id_instance_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_api_t', 'public', 'instance_api_property_t', 'instance_api_property_t_host_id_instance_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_api_t', 'public', 'instance_app_api_t', 'instance_app_api_t_host_id_instance_api_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_app_api_t', 'public', 'instance_app_api_property_t', 'instance_app_api_property_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_app_t', 'public', 'instance_app_api_t', 'instance_app_api_t_host_id_instance_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_app_t', 'public', 'instance_app_property_t', 'instance_app_property_t_host_id_instance_app_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'access_target_t', 'access_target_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable access-target relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'agent_a2a_instance_publication_t', 'agent_a2a_instance_publication_runtime_fk', 'IGNORE', 'NONE', 'A2A instance publication lifecycle is immutable and command-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'auth_client_owner_t', 'auth_client_owner_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'config_snapshot_t', 'config_snapshot_t_host_id_instance_id_fkey', 'IGNORE', 'NONE', 'Immutable configuration snapshots are retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'deployment_instance_t', 'deployment_instance_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'gateway_tool_binding_t', 'gateway_tool_binding_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'gateway_tool_publication_t', 'gateway_tool_publication_t_host_id_instance_id_fkey', 'IGNORE', 'NONE', 'Publication lifecycle is immutable and command-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'instance_api_t', 'instance_api_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'instance_app_t', 'instance_app_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'instance_file_t', 'instance_file_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'instance_property_t', 'instance_fkv2', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'llm_gateway_delegation_policy_t', 'llm_gateway_delegation_policy_t_instance_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable instance-owned delegation policy', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'llm_gateway_instance_property_ownership_t', 'llm_gateway_instance_property_ownershi_host_id_instance_id_fkey', 'IGNORE', 'NONE', 'Ownership lifecycle is release-managed and lacks the soft-delete audit contract', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'llm_gateway_instance_publication_t', 'llm_gateway_instance_publication_t_host_id_instance_id_fkey', 'IGNORE', 'NONE', 'Instance publication lifecycle is immutable and command-owned', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'llm_gateway_ownership_release_t', 'llm_gateway_ownership_release_t_instance_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable instance-owned configuration ownership release', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'llm_gateway_security_profile_t', 'public', 'llm_gateway_delegation_policy_t', 'llm_gateway_delegation_policy_t_profile_fkey', 'SOFT_DELETE', 'RESTORE', 'Delegation policy follows its gateway trust profile', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'org_t', 'public', 'host_t', 'host_t_domain_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'pipeline_t', 'public', 'product_version_pipeline_t', 'product_version_pipeline_t_host_id_pipeline_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'platform_t', 'public', 'pipeline_t', 'pipeline_t_host_id_platform_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'position_t', 'public', 'position_col_filter_t', 'position_col_filter_t_host_id_position_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'position_t', 'public', 'position_permission_t', 'position_permission_t_host_id_position_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'position_t', 'public', 'position_row_filter_t', 'position_row_filter_t_host_id_position_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'position_t', 'public', 'user_position_t', 'user_position_t_host_id_position_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'product_version_t', 'public', 'instance_t', 'product_version_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'product_version_t', 'public', 'product_version_config_profile_t', 'product_version_config_profile__host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'product_version_t', 'public', 'product_version_config_property_t', 'product_version_config_property_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'product_version_t', 'public', 'product_version_config_t', 'product_version_config_t_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'product_version_t', 'public', 'product_version_environment_t', 'product_version_environment_t_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'product_version_t', 'public', 'product_version_pipeline_t', 'product_version_pipeline_t_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'product_version_t', 'public', 'product_version_property_t', 'product_version_property_t_host_id_product_version_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'ref_table_t', 'public', 'ref_value_t', 'ref_value_t_table_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'ref_value_t', 'public', 'relation_t', 'relation_t_value_id_from_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'ref_value_t', 'public', 'relation_t', 'relation_t_value_id_to_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'ref_value_t', 'public', 'value_locale_t', 'value_locale_t_value_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'relation_type_t', 'public', 'relation_t', 'relation_t_relation_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'role_t', 'public', 'role_col_filter_t', 'role_col_filter_t_host_id_role_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'role_t', 'public', 'role_permission_t', 'role_permission_t_host_id_role_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'role_t', 'public', 'role_row_filter_t', 'role_row_filter_t_host_id_role_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'role_t', 'public', 'role_user_t', 'role_user_t_host_id_role_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'rule_t', 'public', 'api_endpoint_rule_t', 'rule_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'rule_t', 'public', 'rule_test_case_t', 'rule_test_case_rule_fk', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'tag_t', 'public', 'entity_tag_t', 'entity_tag_t_tag_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_host_t', 'public', 'customer_t', 'customer_t_host_id_user_id_fkey', 'IGNORE', 'NONE', 'Preserve recoverable customer identity while host membership is inactive', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_host_t', 'public', 'employee_t', 'employee_t_host_id_user_id_fkey', 'IGNORE', 'NONE', 'Preserve recoverable employee identity while host membership is inactive', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'attribute_user_t', 'attribute_user_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'auth_code_t', 'auth_code_t_user_id_fkey', 'HARD_DELETE', 'NONE', 'User deactivation revokes non-restorable authorization codes', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_user_id_fkey', 'HARD_DELETE', 'NONE', 'User deactivation revokes non-restorable refresh tokens', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'auth_session_t', 'auth_session_t_user_id_fkey', 'HARD_DELETE', 'NONE', 'User deactivation revokes non-restorable authorization sessions', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'config_snapshot_t', 'config_snapshot_t_user_id_fkey', 'IGNORE', 'NONE', 'Immutable configuration snapshots are retained independently', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'group_user_t', 'group_user_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'role_user_t', 'role_user_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'user_col_filter_t', 'user_col_filter_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'user_crypto_wallet_t', 'user_crypto_wallet_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'user_host_t', 'user_host_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'user_permission_t', 'user_permission_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'user_row_filter_t', 'user_row_filter_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO public.cascade_relationship_policy_t SELECT * FROM cascade_relationship_policy_seed_t
 ON CONFLICT (parent_schema,parent_table,child_schema,child_table,constraint_name)
 DO UPDATE SET delete_action=EXCLUDED.delete_action,restore_action=EXCLUDED.restore_action,
-    policy_description=EXCLUDED.policy_description,update_user=SESSION_USER,update_ts=CURRENT_TIMESTAMP;
-
-COMMENT ON TABLE public.a2a_backend_transport_profile_t IS 'Portal-authored fixed-loopback light-a2a-backend/v1 transport profile; contains references and limits but no secret material.';
-
---
--- Phase 7 operational-store provisioning control plane. These tables contain
--- desired state and redacted lifecycle evidence only. Runtime credentials and
--- operational application rows never belong in this database.
---
-
-CREATE TABLE IF NOT EXISTS public.operational_store_profile_t (
-    profile_id character varying(126) NOT NULL,
-    profile_version bigint NOT NULL,
-    deployment_profile character varying(32) NOT NULL,
-    provider character varying(32) NOT NULL,
-    profile_config jsonb DEFAULT '{}'::jsonb NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT operational_store_profile_t_pkey PRIMARY KEY (profile_id, profile_version),
-    CONSTRAINT operational_store_profile_deployment_ck CHECK (deployment_profile IN ('DEV_DEDICATED','DEV_POOLED','CUSTOMER_MANAGED')),
-    CONSTRAINT operational_store_profile_provider_ck CHECK (provider IN ('POSTGRESQL','CUSTOMER_MANAGED')),
-    CONSTRAINT operational_store_profile_config_ck CHECK (jsonb_typeof(profile_config) = 'object'),
-    CONSTRAINT operational_store_profile_version_ck CHECK (profile_version > 0 AND aggregate_version > 0),
-    CONSTRAINT operational_store_profile_dev_pooled_ck CHECK (deployment_profile <> 'DEV_POOLED' OR active = false)
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS operational_store_profile_active_uk
-    ON public.operational_store_profile_t(profile_id) WHERE active;
-
-CREATE TABLE IF NOT EXISTS public.operational_store_binding_t (
-    binding_id uuid NOT NULL,
-    host_id uuid NOT NULL,
-    environment character varying(32),
-    scope_kind character varying(32) DEFAULT 'HOST_ENVIRONMENT' NOT NULL,
-    scope_id uuid NOT NULL,
-    profile_id character varying(126) NOT NULL,
-    profile_version bigint NOT NULL,
-    deployment_profile character varying(32) NOT NULL,
-    lifecycle_state character varying(32) NOT NULL,
-    desired_generation bigint NOT NULL,
-    observed_generation bigint DEFAULT 0 NOT NULL,
-    expected_database character varying(63) DEFAULT 'operations' NOT NULL,
-    secret_ref character varying(512) NOT NULL,
-    binding_digest character varying(71) NOT NULL,
-    credential_generation bigint DEFAULT 1 NOT NULL,
-    retention_hold boolean DEFAULT false NOT NULL,
-    retention_reason character varying(512),
-    failure_code character varying(126),
-    provider_resource_ref character varying(512),
-    published boolean DEFAULT false NOT NULL,
-    revocation_epoch bigint DEFAULT 0 NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    contract_version bigint DEFAULT 1 NOT NULL,
-    engine character varying(32),
-    server_host character varying(253),
-    port integer,
-    tls_mode character varying(32),
-    runtime_username character varying(63),
-    credential_source character varying(32),
-    minimum_schema_generation bigint,
-    CONSTRAINT operational_store_binding_t_pkey PRIMARY KEY (binding_id),
-    CONSTRAINT operational_store_binding_profile_fk FOREIGN KEY (profile_id, profile_version)
-        REFERENCES public.operational_store_profile_t(profile_id, profile_version),
-    CONSTRAINT operational_store_binding_environment_ck CHECK (environment IS NULL OR environment ~ '^[a-z][a-z0-9_-]{0,31}$'),
-    CONSTRAINT operational_store_binding_contract_ck CHECK (contract_version IN (1,2)),
-    CONSTRAINT operational_store_binding_scope_ck CHECK ((contract_version=1 AND scope_kind='HOST_ENVIRONMENT' AND scope_id=host_id AND environment IS NOT NULL) OR (contract_version=2 AND scope_kind='HOST' AND scope_id=host_id AND environment IS NULL)),
-    CONSTRAINT operational_store_binding_deployment_ck CHECK (deployment_profile IN ('DEV_DEDICATED','DEV_POOLED','CUSTOMER_MANAGED')),
-    CONSTRAINT operational_store_binding_state_ck CHECK ((contract_version=1 AND lifecycle_state IN ('REQUESTED','PROVISIONING','READY','FAILED','ROTATING','DEACTIVATION_REQUESTED','DEACTIVATED','RETENTION_HOLD','DECOMMISSION_REQUESTED','DECOMMISSIONING','DECOMMISSIONED')) OR (contract_version=2 AND lifecycle_state IN ('REGISTERED','DEACTIVATED','UNREGISTERED'))),
-    CONSTRAINT operational_store_binding_generation_ck CHECK (desired_generation>0 AND observed_generation>=0 AND observed_generation<=desired_generation AND credential_generation>0 AND credential_generation<=9007199254740991 AND (contract_version=1 OR (minimum_schema_generation>0 AND minimum_schema_generation<=9007199254740991))),
-    CONSTRAINT operational_store_binding_database_ck CHECK (expected_database ~ '^[a-z][a-z0-9_]{0,62}$'),
-    CONSTRAINT operational_store_binding_secret_ck CHECK ((contract_version=1 AND secret_ref~'^operational-store/[0-9a-f-]{36}/[a-z][a-z0-9_-]{0,31}/runtime$') OR (contract_version=2 AND length(secret_ref) BETWEEN 1 AND 512)),
-    CONSTRAINT operational_store_binding_secret_scope_ck CHECK (contract_version=2 OR secret_ref='operational-store/'||host_id::text||'/'||environment||'/runtime'),
-    CONSTRAINT operational_store_binding_digest_ck CHECK (binding_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT operational_store_binding_publication_ck CHECK (NOT published OR (contract_version=1 AND lifecycle_state='READY') OR (contract_version=2 AND lifecycle_state='REGISTERED')),
-    CONSTRAINT operational_store_binding_revocation_ck CHECK (revocation_epoch >= 0 AND aggregate_version > 0),
-    CONSTRAINT operational_store_binding_no_secret_ck CHECK (secret_ref !~* '(postgres(ql)?://|password=|pwd=)'),
-    CONSTRAINT operational_store_binding_registration_fields_ck CHECK (contract_version=1 OR (engine='POSTGRESQL' AND server_host~'^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$' AND port BETWEEN 1 AND 65535 AND tls_mode IN ('DISABLE','PREFER','REQUIRE','VERIFY_CA','VERIFY_FULL') AND credential_source='MOUNTED_FILE' AND secret_ref LIKE '/%'))
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS operational_store_binding_active_scope_uk
-    ON public.operational_store_binding_t(host_id, environment)
-    WHERE active AND lifecycle_state <> 'DECOMMISSIONED';
-CREATE UNIQUE INDEX IF NOT EXISTS operational_store_binding_active_host_v2_uk
-    ON public.operational_store_binding_t(host_id)
-    WHERE contract_version=2 AND active AND lifecycle_state<>'UNREGISTERED';
-CREATE INDEX IF NOT EXISTS operational_store_binding_state_ix
-    ON public.operational_store_binding_t(lifecycle_state, update_ts);
-
-CREATE TABLE IF NOT EXISTS public.operational_store_provisioning_job_t (
-    job_id uuid NOT NULL,
-    binding_id uuid NOT NULL,
-    desired_generation bigint NOT NULL,
-    operation_kind character varying(32) NOT NULL,
-    job_state character varying(16) DEFAULT 'PENDING' NOT NULL,
-    idempotency_key character varying(256) NOT NULL,
-    attempt_count integer DEFAULT 0 NOT NULL,
-    lease_owner character varying(126),
-    lease_expires_ts timestamp with time zone,
-    fencing_token bigint DEFAULT 0 NOT NULL,
-    next_attempt_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    last_error_code character varying(126),
-    created_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT operational_store_provisioning_job_t_pkey PRIMARY KEY (job_id),
-    CONSTRAINT operational_store_provisioning_job_binding_fk FOREIGN KEY (binding_id)
-        REFERENCES public.operational_store_binding_t(binding_id),
-    CONSTRAINT operational_store_provisioning_job_operation_ck CHECK (operation_kind IN ('PROVISION','RETRY','ROTATE','DEACTIVATE','DECOMMISSION')),
-    CONSTRAINT operational_store_provisioning_job_state_ck CHECK (job_state IN ('PENDING','CLAIMED','COMPLETED','FAILED','CANCELLED')),
-    CONSTRAINT operational_store_provisioning_job_generation_ck CHECK (desired_generation > 0 AND attempt_count >= 0 AND fencing_token >= 0),
-    CONSTRAINT operational_store_provisioning_job_idempotency_uk UNIQUE (idempotency_key)
-);
-
-CREATE INDEX IF NOT EXISTS operational_store_provisioning_job_claim_ix
-    ON public.operational_store_provisioning_job_t(job_state, next_attempt_ts, created_ts);
-
-CREATE OR REPLACE FUNCTION public.operational_store_decommission_guard()
-RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE enforce_hold boolean := false;
+policy_description=EXCLUDED.policy_description,update_user=SESSION_USER,update_ts=CURRENT_TIMESTAMP;
+DELETE FROM public.cascade_relationship_policy_t p
+WHERE p.parent_schema=current_schema() AND p.child_schema=current_schema()
+AND NOT EXISTS (SELECT 1 FROM cascade_relationship_policy_seed_t s
+WHERE (s.parent_schema,s.parent_table,s.child_schema,s.child_table,s.constraint_name)=
+(p.parent_schema,p.parent_table,p.child_schema,p.child_table,p.constraint_name));
+-- Executed after the generated authoritative seed has been synchronized.
+SELECT validate_cascade_relationship_policies();
+DO $install_cascade_triggers$
+DECLARE item record;
 BEGIN
-    IF NEW.operation_kind='DECOMMISSION' AND TG_OP='INSERT' THEN
-        enforce_hold := true;
-    ELSIF NEW.operation_kind='DECOMMISSION'
-          AND (OLD.operation_kind IS DISTINCT FROM NEW.operation_kind
-               OR OLD.binding_id IS DISTINCT FROM NEW.binding_id) THEN
-        enforce_hold := true;
-    END IF;
-    IF enforce_hold AND EXISTS (
-        SELECT 1 FROM public.operational_store_binding_t
-        WHERE binding_id=NEW.binding_id AND retention_hold
-    ) THEN
-        RAISE EXCEPTION 'retention hold blocks operational-store decommission';
-    END IF;
-    RETURN NEW;
+    FOR item IN
+        SELECT n.nspname, c.relname, t.tgname
+        FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+        JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE t.tgname='trg_cascade_soft_ops' AND NOT t.tgisinternal
+          AND n.nspname=current_schema()
+    LOOP
+        EXECUTE format('DROP TRIGGER %I ON %I.%I', item.tgname,item.nspname,item.relname);
+    END LOOP;
+    FOR item IN
+        SELECT DISTINCT parent_schema,parent_table FROM cascade_relationships_v
+        WHERE delete_action <> 'IGNORE' AND parent_schema=current_schema()
+    LOOP
+        EXECUTE format('CREATE TRIGGER trg_cascade_soft_ops AFTER UPDATE OF active ON %I.%I FOR EACH ROW EXECUTE FUNCTION %I.smart_cascade_delete()',
+            item.parent_schema,item.parent_table,current_schema());
+    END LOOP;
 END
-$$;
-DROP TRIGGER IF EXISTS operational_store_decommission_guard_trg ON public.operational_store_provisioning_job_t;
-CREATE TRIGGER operational_store_decommission_guard_trg
-BEFORE INSERT OR UPDATE OF operation_kind, binding_id ON public.operational_store_provisioning_job_t
-FOR EACH ROW EXECUTE FUNCTION public.operational_store_decommission_guard();
+$install_cascade_triggers$;
 
-CREATE TABLE IF NOT EXISTS public.operational_store_publication_t (
-    binding_id uuid NOT NULL,
-    binding_version bigint NOT NULL,
-    host_id uuid NOT NULL,
-    environment character varying(32),
-    publication_state character varying(16) NOT NULL,
-    content_digest character varying(71) NOT NULL,
-    projection jsonb NOT NULL,
-    revocation_epoch bigint DEFAULT 0 NOT NULL,
-    valid_from timestamp with time zone NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT operational_store_publication_t_pkey PRIMARY KEY (binding_id, binding_version),
-    CONSTRAINT operational_store_publication_binding_fk FOREIGN KEY (binding_id)
-        REFERENCES public.operational_store_binding_t(binding_id),
-    CONSTRAINT operational_store_publication_state_ck CHECK (publication_state IN ('ACTIVE','REVOKED')),
-    CONSTRAINT operational_store_publication_digest_ck CHECK (content_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT operational_store_publication_projection_ck CHECK (jsonb_typeof(projection) = 'object'),
-    CONSTRAINT operational_store_publication_version_ck CHECK (binding_version > 0 AND revocation_epoch >= 0),
-    CONSTRAINT operational_store_publication_no_secret_ck CHECK (projection::text !~* '(postgres(ql)?://|password|credential(material|value|secret|token|url))')
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS operational_store_publication_active_uk
-    ON public.operational_store_publication_t(binding_id) WHERE publication_state = 'ACTIVE';
-
-CREATE TABLE IF NOT EXISTS public.operational_store_instance_property_ownership_t (
-    host_id uuid NOT NULL,
-    instance_id uuid NOT NULL,
-    property_id uuid NOT NULL,
-    binding_id uuid NOT NULL,
-    binding_version bigint NOT NULL,
-    environment character varying(32) NOT NULL,
-    property_value text NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(255) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT operational_store_instance_property_ownership_t_pkey
-        PRIMARY KEY (host_id, instance_id, property_id),
-    CONSTRAINT operational_store_instance_property_ownership_binding_fk
-        FOREIGN KEY (binding_id) REFERENCES public.operational_store_binding_t(binding_id),
-    CONSTRAINT operational_store_instance_property_ownership_version_ck
-        CHECK (binding_version > 0),
-    CONSTRAINT operational_store_instance_property_ownership_environment_ck
-        CHECK (environment ~ '^[a-z][a-z0-9_-]{0,31}$'),
-    CONSTRAINT operational_store_instance_property_ownership_no_secret_ck
-        CHECK (property_value !~* '(postgres(ql)?://|password=|pwd=)')
-);
-
-CREATE INDEX IF NOT EXISTS operational_store_instance_property_ownership_binding_ix
-    ON public.operational_store_instance_property_ownership_t(binding_id, active);
-
-CREATE OR REPLACE FUNCTION public.operational_store_publication_guard()
-RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE binding_state varchar(32); binding_published boolean; binding_host uuid;
-        binding_environment varchar(32); binding_contract bigint;
-BEGIN
-    IF NEW.publication_state = 'ACTIVE' THEN
-        SELECT lifecycle_state,published,host_id,environment,contract_version
-          INTO binding_state,binding_published,binding_host,binding_environment,binding_contract
-          FROM public.operational_store_binding_t WHERE binding_id=NEW.binding_id;
-        IF binding_published IS DISTINCT FROM true OR binding_host IS DISTINCT FROM NEW.host_id
-           OR (binding_contract=1 AND (binding_state IS DISTINCT FROM 'READY'
-               OR binding_environment IS DISTINCT FROM NEW.environment))
-           OR (binding_contract=2 AND (binding_state IS DISTINCT FROM 'REGISTERED'
-               OR NEW.environment IS NOT NULL)) THEN
-            RAISE EXCEPTION 'only an exact published operational-store binding may publish';
-        END IF;
-    END IF;
-    RETURN NEW;
-END
-$$;
-DROP TRIGGER IF EXISTS operational_store_publication_guard_trg ON public.operational_store_publication_t;
-CREATE TRIGGER operational_store_publication_guard_trg
-BEFORE INSERT OR UPDATE ON public.operational_store_publication_t
-FOR EACH ROW EXECUTE FUNCTION public.operational_store_publication_guard();
-
--- A prior run has already installed the read-only guard. Remove it before the
--- idempotent seed writes and restore it below so this seed section is re-runnable.
-DROP TRIGGER IF EXISTS operational_store_legacy_profile_write_guard_trg
-    ON public.operational_store_profile_t;
-
-INSERT INTO public.operational_store_profile_t (
-    profile_id, profile_version, deployment_profile, provider, profile_config,
-    aggregate_version, active, update_user
-) VALUES (
-    'dev-dedicated-postgres-v1', 1, 'DEV_DEDICATED', 'POSTGRESQL',
-    '{"databaseIdentity":"operations","databasePerHostEnvironment":true,"providerAdapter":"postgres17-pgvector-container","pooled":false}'::jsonb,
-    1, false, 'p7-compatibility-closure'
-) ON CONFLICT (profile_id, profile_version) DO NOTHING;
-
-INSERT INTO public.operational_store_profile_t (
-    profile_id, profile_version, deployment_profile, provider, profile_config,
-    aggregate_version, active, update_user
-) VALUES (
-    'customer-managed-registration-v2', 2, 'CUSTOMER_MANAGED', 'CUSTOMER_MANAGED',
-    '{"databaseProvisionedExternally":true,"hostScoped":true,"portalDatabaseAccess":false}'::jsonb,
-    1, true, 'registration-v2-bootstrap'
-) ON CONFLICT (profile_id, profile_version) DO NOTHING;
-
--- Version-1 provider profiles and jobs are retained only for historical replay
--- and audit. No application or operator may restart the retired provisioner.
-CREATE OR REPLACE FUNCTION public.operational_store_legacy_write_guard()
-RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION 'version-1 operational-store provisioning is read-only';
-END
-$$;
-
-DROP TRIGGER IF EXISTS operational_store_legacy_job_write_guard_trg
-    ON public.operational_store_provisioning_job_t;
-CREATE TRIGGER operational_store_legacy_job_write_guard_trg
-BEFORE INSERT OR UPDATE OR DELETE ON public.operational_store_provisioning_job_t
-FOR EACH ROW EXECUTE FUNCTION public.operational_store_legacy_write_guard();
-
-DROP TRIGGER IF EXISTS operational_store_legacy_profile_write_guard_trg
-    ON public.operational_store_profile_t;
-CREATE TRIGGER operational_store_legacy_profile_write_guard_trg
-BEFORE INSERT OR UPDATE OR DELETE ON public.operational_store_profile_t
-FOR EACH ROW EXECUTE FUNCTION public.operational_store_legacy_write_guard();
-
--- Authoritative LLM gateway trust and endpoint policy; generated bindings stay derived.
-CREATE TABLE public.llm_gateway_security_profile_t (
-    host_id uuid NOT NULL,
-    security_profile_id uuid NOT NULL,
-    environment varchar(16) NOT NULL,
-    user_issuer text NOT NULL,
-    user_audience text NOT NULL,
-    schema_version integer NOT NULL DEFAULT 1,
-    aggregate_version bigint NOT NULL,
-    active boolean NOT NULL DEFAULT true,
-    update_user varchar(255),
-    update_ts timestamptz,
-    delete_user varchar(255),
-    delete_ts timestamptz
-);
-CREATE TABLE public.llm_gateway_delegation_policy_t (
-    host_id uuid NOT NULL,
-    instance_id uuid NOT NULL,
-    security_profile_id uuid NOT NULL,
-    endpoints jsonb NOT NULL,
-    schema_version integer NOT NULL DEFAULT 1,
-    migration_provenance jsonb,
-    aggregate_version bigint NOT NULL,
-    active boolean NOT NULL DEFAULT true,
-    update_user varchar(255),
-    update_ts timestamptz,
-    delete_user varchar(255),
-    delete_ts timestamptz
-);
-CREATE TABLE public.llm_gateway_ownership_release_t (
-    host_id uuid NOT NULL,
-    ownership_release_id uuid NOT NULL,
-    instance_id uuid NOT NULL,
-    instance_publication_id uuid NOT NULL,
-    config_properties jsonb NOT NULL,
-    aggregate_version bigint NOT NULL,
-    active boolean NOT NULL DEFAULT true,
-    update_user varchar(255),
-    update_ts timestamptz,
-    delete_user varchar(255),
-    delete_ts timestamptz
-);
-
-ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.host_t(host_id);
-ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_user_issuer_check CHECK (length(trim(user_issuer)) > 0);
-ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_user_audience_check CHECK (length(trim(user_audience)) > 0);
-ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_schema_version_check CHECK (schema_version = 1);
-ALTER TABLE ONLY public.llm_gateway_security_profile_t ADD CONSTRAINT llm_gateway_security_profile_t_pkey PRIMARY KEY (host_id, security_profile_id);
-ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_schema_version_check CHECK (schema_version = 1);
-ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_endpoints_check CHECK (jsonb_typeof(endpoints) = 'object');
-ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_pkey PRIMARY KEY (host_id, instance_id);
-ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_instance_fkey FOREIGN KEY (host_id, instance_id) REFERENCES public.instance_t(host_id, instance_id);
-ALTER TABLE ONLY public.llm_gateway_delegation_policy_t ADD CONSTRAINT llm_gateway_delegation_policy_t_profile_fkey FOREIGN KEY (host_id, security_profile_id)
-        REFERENCES public.llm_gateway_security_profile_t(host_id, security_profile_id);
-ALTER TABLE ONLY public.llm_gateway_ownership_release_t ADD CONSTRAINT llm_gateway_ownership_release_t_pkey PRIMARY KEY (host_id, ownership_release_id);
-ALTER TABLE ONLY public.llm_gateway_ownership_release_t ADD CONSTRAINT llm_gateway_ownership_release_t_instance_fkey FOREIGN KEY (host_id, instance_id) REFERENCES public.instance_t(host_id, instance_id);
-CREATE UNIQUE INDEX llm_gateway_security_profile_active_environment_idx ON public.llm_gateway_security_profile_t (host_id, environment) WHERE active IS TRUE;
-
-COMMENT ON TABLE public.llm_gateway_security_profile_t IS
-    'Event-authored user trust profile shared by host and logical environment.';
-COMMENT ON TABLE public.llm_gateway_delegation_policy_t IS
-    'Event-authored per-instance endpoint requirements referencing an environment trust profile.';
-COMMENT ON TABLE public.llm_gateway_ownership_release_t IS
-    'Idempotent ownership-release projection retaining exact generic baseline material.';
-
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.host_id IS 'Host owning this record.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.security_profile_id IS 'Stable event aggregate identifier for the shared trust profile.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.environment IS 'Logical environment matching the gateway instance environment.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.user_issuer IS 'Trusted delegated user token issuer.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.user_audience IS 'Trusted delegated user token audience.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.schema_version IS 'Version of the authoring contract.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.aggregate_version IS 'Last applied event aggregate version.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.active IS 'Whether this record is active.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.update_user IS 'Actor responsible for the latest update.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.update_ts IS 'Timestamp of the latest update.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.delete_user IS 'Actor responsible for soft deletion.';
-COMMENT ON COLUMN public.llm_gateway_security_profile_t.delete_ts IS 'Timestamp of soft deletion.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.host_id IS 'Host owning this record.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.instance_id IS 'Gateway instance within the owning host.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.security_profile_id IS 'Stable event aggregate identifier for the shared trust profile.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.endpoints IS 'Explicit workload-token requirement for each supported inference endpoint.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.schema_version IS 'Version of the authoring contract.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.migration_provenance IS 'Evidence retained from authoring migration.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.aggregate_version IS 'Last applied event aggregate version.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.active IS 'Whether this record is active.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.update_user IS 'Actor responsible for the latest update.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.update_ts IS 'Timestamp of the latest update.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.delete_user IS 'Actor responsible for soft deletion.';
-COMMENT ON COLUMN public.llm_gateway_delegation_policy_t.delete_ts IS 'Timestamp of soft deletion.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.host_id IS 'Host owning this record.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.ownership_release_id IS 'Stable identifier of the ownership release event.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.instance_id IS 'Gateway instance within the owning host.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.instance_publication_id IS 'Publication application whose ownership was released.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.config_properties IS 'Exact property values and stream versions retained as generic baselines.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.aggregate_version IS 'Last applied event aggregate version.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.active IS 'Whether this record is active.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.update_user IS 'Actor responsible for the latest update.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.update_ts IS 'Timestamp of the latest update.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.delete_user IS 'Actor responsible for soft deletion.';
-COMMENT ON COLUMN public.llm_gateway_ownership_release_t.delete_ts IS 'Timestamp of soft deletion.';
-
-
-
-
--- Endpoint transport is shared by deployments. Keep the cross-row Bedrock
--- contract valid for direct imports as well as command-handler writes.
-CREATE FUNCTION public.validate_llm_deployment_endpoint_policy() RETURNS trigger
- LANGUAGE plpgsql AS $$
-DECLARE protocol text;
-BEGIN
- IF TG_TABLE_NAME = 'llm_provider_deployment_t' THEN
-  IF NEW.active IS NOT TRUE THEN RETURN NEW; END IF;
-  SELECT provider_protocol INTO protocol FROM public.llm_provider_endpoint_t
-   WHERE host_id=NEW.host_id AND provider_endpoint_id=NEW.provider_endpoint_id FOR UPDATE;
-  IF FOUND AND ((protocol='bedrock_converse') IS DISTINCT FROM (NEW.bedrock_policy IS NOT NULL)) THEN
-   RAISE EXCEPTION 'bedrockPolicy must match the provider endpoint protocol' USING ERRCODE='23514';
-  END IF;
- ELSE
-  IF NEW.provider_protocol IS DISTINCT FROM OLD.provider_protocol AND EXISTS (
-   SELECT 1 FROM public.llm_provider_deployment_t d
-    WHERE d.host_id=NEW.host_id AND d.provider_endpoint_id=NEW.provider_endpoint_id
-     AND d.active IS TRUE
-     AND ((NEW.provider_protocol='bedrock_converse') IS DISTINCT FROM (d.bedrock_policy IS NOT NULL))
-  ) THEN
-   RAISE EXCEPTION 'Provider endpoint protocol conflicts with deployment bedrockPolicy' USING ERRCODE='23514';
-  END IF;
- END IF;
- RETURN NEW;
-END;
-$$;
-COMMENT ON FUNCTION public.validate_llm_deployment_endpoint_policy() IS
- 'Validates deployment Bedrock policy against the authoritative endpoint protocol.';
-CREATE TRIGGER llm_deployment_endpoint_policy_check
- BEFORE INSERT OR UPDATE OF provider_endpoint_id,bedrock_policy,active ON public.llm_provider_deployment_t
- FOR EACH ROW EXECUTE FUNCTION public.validate_llm_deployment_endpoint_policy();
-CREATE TRIGGER llm_endpoint_deployment_policy_check
- BEFORE UPDATE OF provider_protocol ON public.llm_provider_endpoint_t
- FOR EACH ROW EXECUTE FUNCTION public.validate_llm_deployment_endpoint_policy();
-
-\unrestrict hH5RPVy0DmoyafcyXfCcG4i9sdKgsYSKTzXXVVYP7XpvO7UaT9TIlRIkHZQaYB0
+COMMIT;
+\unrestrict 5E8R5bpWf8E8G0qhQuemxc32BZgpsRV9zjzvWexyr57OayUayhORA3i6NVhiWbh
 
 
 INSERT INTO public.user_t (user_id, language, first_name, last_name, email, user_type, verified, password)
