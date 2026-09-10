@@ -1,6 +1,6 @@
 services:
   portal-bff-sso:
-    image: ${PORTAL_BFF_SSO_IMAGE:-${LIGHT_GATEWAY_IMAGE:-networknt/light-gateway:2.3.5}}
+    image: ${PORTAL_BFF_SSO_IMAGE:-${LIGHT_GATEWAY_IMAGE:-networknt/light-gateway:2.3.5-dev.20260909.2338}}
     ports:
       - "${PORTAL_BFF_SSO_HOST_PORT:-8445}:8443"
     volumes:
@@ -19,7 +19,7 @@ services:
       LIGHT_PORTAL_AUTHORIZATION: "${PORTAL_BFF_SSO_LIGHT_PORTAL_AUTHORIZATION:?Set PORTAL_BFF_SSO_LIGHT_PORTAL_AUTHORIZATION in .env.bootstrap}"
       CLIENT_VERIFYHOSTNAME: "${PORTAL_BFF_SSO_VERIFY_CONFIG_SERVER_HOSTNAME:-false}"
       CLIENT_CACERTPATH: /config-server-ca/ca.pem
-      gatewayEvidence.enabled: "${PORTAL_BFF_SSO_EVIDENCE_ENABLED:-false}"
+      gateway-evidence.enabled: "${PORTAL_BFF_SSO_EVIDENCE_ENABLED:-false}"
       security-msal.issuer: "https://login.microsoftonline.com/${MSAL_TENANT_ID:?Set MSAL_TENANT_ID in .env.bootstrap}/v2.0"
       security-msal.audience: "${MSAL_CLIENT_ID:?Set MSAL_CLIENT_ID in .env.bootstrap}"
       msal-exchange.cookieDomain: "${CUSTOMER_PORTAL_HOST:-dev.yourcompany.com}"

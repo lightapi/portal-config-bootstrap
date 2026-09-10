@@ -1,6 +1,8 @@
 host: ${LIGHT_GATEWAY_STARTUP_HOST:dev.lightapi.net}
 serviceId: ${LIGHT_GATEWAY_SERVICE_ID:com.networknt.portal.gateway-1.0.0}
-envTag: ${LIGHT_GATEWAY_ENVIRONMENT:dev}
+# The default must match the bundled portal token env claim.
+# Using bootstrap requires both LIGHT_GATEWAY_ENVIRONMENT=bootstrap and a matching token.
+envTag: ${LIGHT_GATEWAY_ENVIRONMENT:bootstrap}
 acceptHeader: application/yaml
 timeout: ${LIGHT_GATEWAY_STARTUP_TIMEOUT:3000}
 connectTimeout: ${LIGHT_GATEWAY_STARTUP_CONNECT_TIMEOUT:3000}

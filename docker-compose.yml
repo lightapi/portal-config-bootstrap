@@ -487,7 +487,7 @@ services:
       start_period: 10s
 
   light-gateway:
-    image: ${LIGHT_GATEWAY_IMAGE:-networknt/light-gateway:2.3.5}
+    image: ${LIGHT_GATEWAY_IMAGE:-networknt/light-gateway:2.3.5-dev.20260909.2338}
     ports:
       - 443:8443
     volumes:
@@ -497,23 +497,6 @@ services:
       - gateway-runtime-secrets:/run/secrets:ro
     environment:
       LIGHT_RS_CONFIG_DIR: /config
-      gatewayEvidence.enabled: "true"
-      gatewayEvidence.contractVersion: "2"
-      gatewayEvidence.databaseUrlFile: /run/secrets/operational-database-url
-      gatewayEvidence.bindingId: 01a06356-a4aa-7528-838e-dfbbe90ec959
-      gatewayEvidence.bindingDigest: sha256:79a39f6ff78c336d6ac9b0dc711115750bf22be954c584fa836930150e3db09e
-      gatewayEvidence.hostId: 01964b05-552a-7c4b-9184-6857e7f3dc5f
-      gatewayEvidence.environment: dev
-      gatewayEvidence.serverHost: postgres
-      gatewayEvidence.port: "5432"
-      gatewayEvidence.tlsMode: DISABLE
-      gatewayEvidence.serviceOwner: light-gateway
-      gatewayEvidence.schema: gateway_ops
-      gatewayEvidence.expectedDatabase: operations
-      gatewayEvidence.minimumSchemaGeneration: "2"
-      gatewayEvidence.credentialGeneration: "1"
-      gatewayEvidence.gatewayInstance: light-gateway-dev-1
-      gatewayEvidence.sinkEndpoint: stdout://collector
       # ACCESS_CONTROL_ENABLED: "false"
       CLIENT_VERIFYHOSTNAME: "false"
       CLIENT_CACERTPATH: /config/ca.pem
@@ -523,7 +506,7 @@ services:
       STATELESSAUTH_FACEBOOKCLIENTSECRET: ${STATELESSAUTH_FACEBOOKCLIENTSECRET}
       GROQ_API_KEY: "${GROQ_API_KEY:-}"
       GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
-      LIGHT_PORTAL_AUTHORIZATION: "${LIGHT_GATEWAY_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxOWUxNGY5LWViNzgtNzRjNC04MGU3LWVjNmFhNjgwMGIxNSIsImV4cCI6MjA5NzMzMjY5NywianRpIjoidzJURFFLRDNUblMwYWVfVzdmNWVMUSIsImlhdCI6MTc4MTk3MjY5NywibmJmIjoxNzgxOTcyNTc3LCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTllMTRmOS1lYjc4LTc0YzQtODBlNy1lYzZhYTY4MDBiMTUiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMTllMTRmOS1lYjc4LTc0YzQtODBlNy1lYzZhYTY4MDBiMTUiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQucG9ydGFsLmdhdGV3YXktMS4wLjAifQ.CxR175PdsizO1mLtV7f_lPxyLhdlmOmNy80InIHH-R-FlIsDiGXVzjlqn6b3h_gI_v-st0r4vQPXUxotDBNSbyStXUq1HZDdBS_7O15f7VgCbK95re909BC06Qm4uSgPs9F6IB_LfVjwxkJ5nxKg2geXJ6SgQ_m0Ux1Kyeku-ctx6FT-0t50SJZIMaZ73J3oiXuFgbj37fEXxCUZmpibsoLeLALvPUYWseZZNiJ1nBOOPWrPtDdvqIrUJQntL1jrbuAQuRvtORYNYRAG9Ju4QCIv1G8_GhLHSt18EoIMa5WkZUsC73KheAKLYUzhiDcPvb-Nv4jnwMzoNdPBD1mlMA}"
+      LIGHT_PORTAL_AUTHORIZATION: "${LIGHT_GATEWAY_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxYTA4OTU2LTU4YWItN2M5ZC1iNWM3LWZjOWIxOTg2MmU2ZCIsImV4cCI6MjEwNDM3MDU3NCwianRpIjoiMHVuTHJET3hSaGFjTkhFaE5fNzhsZyIsImlhdCI6MTc4OTAxMDU3NCwibmJmIjoxNzg5MDEwNDU0LCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMWEwODk1Ni01OGFiLTdjOWQtYjVjNy1mYzliMTk4NjJlNmQiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMWEwODk1Ni01OGFiLTdjOWQtYjVjNy1mYzliMTk4NjJlNmQiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiYm9vdHN0cmFwIiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQucG9ydGFsLmdhdGV3YXktMS4wLjAifQ.TpCxWaThRV0sSue3KKiBBmoXJSoP17MrEGxID0j6iV9SEcvrpEcQtpw-QcW0CW-G77YrC685zvjVUUO3mcsPeu3KumVFCdz4_pCaWYT6WHPsqa1UtM9F79TPuxO4_kxYwUuD27CJFtUnRQKOJ8rXRKh2niwFznTUQEr4vvEkv3KNUMm_0zp7fQYsUx7N3thL0_ZE3NpNrzhxMm-0tgXjeFqapSfTZy_a04RDHzAP2bHjMYKUZY9A0RzpVKs8fhaypL7U7KRKZNi_iPgwS-OdOfsE89iCWm6K3V7VzvZc6QIxNk2oaoe5HJRxbvy4MGgyxuxn5bsQXalUD8IKdSBAaw}"
       WORKFLOW_INVOCATION_SCOPE_TOKEN: "${LIGHT_GATEWAY_WORKFLOW_INVOCATION_SCOPE_TOKEN:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxOWUxNGY5LWViNzgtNzRjNC04MGU3LWVjNmFhNjgwMGIxNSIsImV4cCI6MjA5NzMzMjY5NywianRpIjoidzJURFFLRDNUblMwYWVfVzdmNWVMUSIsImlhdCI6MTc4MTk3MjY5NywibmJmIjoxNzgxOTcyNTc3LCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMTllMTRmOS1lYjc4LTc0YzQtODBlNy1lYzZhYTY4MDBiMTUiLCJzY3AiOlsicG9ydGFsLnIiLCJwb3J0YWwudyJdLCJjbGllbnRfaWQiOiIwMTllMTRmOS1lYjc4LTc0YzQtODBlNy1lYzZhYTY4MDBiMTUiLCJzY29wZSI6InBvcnRhbC5yIHBvcnRhbC53IiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQucG9ydGFsLmdhdGV3YXktMS4wLjAifQ.CxR175PdsizO1mLtV7f_lPxyLhdlmOmNy80InIHH-R-FlIsDiGXVzjlqn6b3h_gI_v-st0r4vQPXUxotDBNSbyStXUq1HZDdBS_7O15f7VgCbK95re909BC06Qm4uSgPs9F6IB_LfVjwxkJ5nxKg2geXJ6SgQ_m0Ux1Kyeku-ctx6FT-0t50SJZIMaZ73J3oiXuFgbj37fEXxCUZmpibsoLeLALvPUYWseZZNiJ1nBOOPWrPtDdvqIrUJQntL1jrbuAQuRvtORYNYRAG9Ju4QCIv1G8_GhLHSt18EoIMa5WkZUsC73KheAKLYUzhiDcPvb-Nv4jnwMzoNdPBD1mlMA}"
       RUST_LOG: "${RUST_LOG:-warn}"
       GATEWAY_LOG_ANSI: "false"
@@ -542,10 +525,11 @@ services:
         condition: service_completed_successfully
 
   llm-gateway:
-    image: ${LLM_GATEWAY_IMAGE:-${LIGHT_GATEWAY_IMAGE:-networknt/light-gateway:2.3.5}}
+    image: ${LLM_GATEWAY_IMAGE:-${LIGHT_GATEWAY_IMAGE:-networknt/light-gateway:2.3.5-dev.20260909.2338}}
     ports:
       - "${LLM_GATEWAY_HOST_PORT:-8444}:8443"
     volumes:
+      - gateway-runtime-secrets:/run/secrets:ro
       - ./llm-gateway-rust/config:/config:ro
     environment:
       LIGHT_RS_CONFIG_DIR: /config
@@ -561,6 +545,10 @@ services:
     hostname: llm-gateway
     container_name: llm-gateway
     depends_on:
+      operational-runtime-secrets-init:
+        condition: service_completed_successfully
+      operational-schema-validation:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       controller:
