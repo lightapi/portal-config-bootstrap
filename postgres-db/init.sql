@@ -5,7 +5,7 @@ CREATE DATABASE configserver;
 -- PostgreSQL database dump
 --
 
-\restrict 5E8R5bpWf8E8G0qhQuemxc32BZgpsRV9zjzvWexyr57OayUayhORA3i6NVhiWbh
+\restrict kta2dGIoiro6ZPEmX15GpvuVy1LsNPgpMpdASRiq0bbeFC44hhifcPxb8zcC7bK
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg12+1)
 -- Dumped by pg_dump version 17.10 (Debian 17.10-1.pgdg12+1)
@@ -12393,6 +12393,63 @@ COMMENT ON COLUMN public.auth_ref_token_t.update_ts IS 'Timestamp when this reco
 
 
 --
+-- Name: auth_refresh_claim_source_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_refresh_claim_source_t (
+    auth_host_id uuid NOT NULL,
+    client_id uuid NOT NULL,
+    claim_name text NOT NULL,
+    source_kind text NOT NULL,
+    attribute_id text,
+    CONSTRAINT auth_refresh_claim_source_t_check CHECK ((((source_kind = 'APP_METADATA'::text) AND (attribute_id IS NULL)) OR ((source_kind = 'USER_ATTRIBUTE'::text) AND (attribute_id IS NOT NULL)))),
+    CONSTRAINT auth_refresh_claim_source_t_source_kind_check CHECK ((source_kind = ANY (ARRAY['APP_METADATA'::text, 'USER_ATTRIBUTE'::text])))
+);
+
+
+--
+-- Name: TABLE auth_refresh_claim_source_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_refresh_claim_source_t IS 'Issuer-owned workflow authorization state; runtime access requires an active authenticated client.';
+
+
+--
+-- Name: COLUMN auth_refresh_claim_source_t.auth_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_refresh_claim_source_t.auth_host_id IS 'Auth host id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_refresh_claim_source_t.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_refresh_claim_source_t.client_id IS 'Client id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_refresh_claim_source_t.claim_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_refresh_claim_source_t.claim_name IS 'Claim name for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_refresh_claim_source_t.source_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_refresh_claim_source_t.source_kind IS 'Explicit live user attribute or administrator-owned application metadata classification.';
+
+
+--
+-- Name: COLUMN auth_refresh_claim_source_t.attribute_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_refresh_claim_source_t.attribute_id IS 'Attribute id for this issuer-owned authorization record.';
+
+
+--
 -- Name: auth_refresh_token_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -12939,6 +12996,513 @@ COMMENT ON COLUMN public.auth_session_t.update_user IS 'User or service principa
 --
 
 COMMENT ON COLUMN public.auth_session_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: auth_workflow_broker_certificate_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_workflow_broker_certificate_t (
+    auth_host_id uuid NOT NULL,
+    provider_id text NOT NULL,
+    client_id uuid NOT NULL,
+    certificate_sha256 text NOT NULL,
+    san_uri text NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    CONSTRAINT auth_workflow_broker_certificate_t_certificate_sha256_check CHECK ((certificate_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT auth_workflow_broker_certificate_t_san_uri_check CHECK ((length(san_uri) > 0))
+);
+
+
+--
+-- Name: TABLE auth_workflow_broker_certificate_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_workflow_broker_certificate_t IS 'Issuer-owned workflow authorization state; runtime access requires an active authenticated client.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_certificate_t.auth_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_certificate_t.auth_host_id IS 'Auth host id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_certificate_t.provider_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_certificate_t.provider_id IS 'Provider id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_certificate_t.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_certificate_t.client_id IS 'Client id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_certificate_t.certificate_sha256; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_certificate_t.certificate_sha256 IS 'SHA-256 fingerprint of the registered TLS client certificate.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_certificate_t.san_uri; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_certificate_t.san_uri IS 'San uri for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_certificate_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_certificate_t.active IS 'Whether this issuer-owned registration is currently usable.';
+
+
+--
+-- Name: auth_workflow_broker_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_workflow_broker_t (
+    auth_host_id uuid NOT NULL,
+    provider_id text NOT NULL,
+    client_id uuid NOT NULL,
+    allowed_host_ids uuid[] NOT NULL,
+    maximum_grant_seconds bigint NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    version bigint DEFAULT 1 NOT NULL,
+    CONSTRAINT auth_workflow_broker_t_allowed_host_ids_check CHECK ((cardinality(allowed_host_ids) > 0)),
+    CONSTRAINT auth_workflow_broker_t_maximum_grant_seconds_check CHECK (((maximum_grant_seconds >= 600) AND (maximum_grant_seconds <= 31536000)))
+);
+
+
+--
+-- Name: TABLE auth_workflow_broker_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_workflow_broker_t IS 'Issuer-owned workflow authorization state; runtime access requires an active authenticated client.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_t.auth_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_t.auth_host_id IS 'Auth host id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_t.provider_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_t.provider_id IS 'Provider id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_t.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_t.client_id IS 'Client id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_t.allowed_host_ids; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_t.allowed_host_ids IS 'Tenant allowlist for this broker client.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_t.maximum_grant_seconds; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_t.maximum_grant_seconds IS 'Maximum grant seconds for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_t.active IS 'Whether this issuer-owned registration is currently usable.';
+
+
+--
+-- Name: COLUMN auth_workflow_broker_t.version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_broker_t.version IS 'Version for this issuer-owned authorization record.';
+
+
+--
+-- Name: auth_workflow_enrollment_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_workflow_enrollment_t (
+    enrollment_id uuid NOT NULL,
+    auth_host_id uuid NOT NULL,
+    provider_id text NOT NULL,
+    client_id uuid NOT NULL,
+    host_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    code_challenge text NOT NULL,
+    callback_uri text NOT NULL,
+    state text NOT NULL,
+    scope text NOT NULL,
+    binding jsonb NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    grant_expires_at timestamp with time zone NOT NULL,
+    approved boolean DEFAULT false NOT NULL,
+    redeemed boolean DEFAULT false NOT NULL,
+    session_id uuid,
+    CONSTRAINT auth_workflow_enrollment_t_binding_check CHECK ((jsonb_typeof(binding) = 'object'::text))
+);
+
+
+--
+-- Name: TABLE auth_workflow_enrollment_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_workflow_enrollment_t IS 'Issuer-owned workflow authorization state; runtime access requires an active authenticated client.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.enrollment_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.enrollment_id IS 'Enrollment id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.auth_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.auth_host_id IS 'Auth host id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.provider_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.provider_id IS 'Provider id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.client_id IS 'Client id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.host_id IS 'Host id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.user_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.user_id IS 'User id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.code_challenge; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.code_challenge IS 'S256 PKCE challenge for the backend-held verifier.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.callback_uri; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.callback_uri IS 'Callback uri for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.state IS 'Backend-generated enrollment state bound to the PKCE exchange.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.scope; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.scope IS 'Scope for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.binding; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.binding IS 'Immutable consented workflow or schedule authorization ceiling.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.expires_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.expires_at IS 'Expires at for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.grant_expires_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.grant_expires_at IS 'Absolute end of the consented renewable authorization.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.approved; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.approved IS 'Approved for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.redeemed; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.redeemed IS 'Redeemed for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_enrollment_t.session_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_enrollment_t.session_id IS 'Session id for this issuer-owned authorization record.';
+
+
+--
+-- Name: auth_workflow_grant_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_workflow_grant_t (
+    grant_id uuid NOT NULL,
+    auth_host_id uuid NOT NULL,
+    provider_id text NOT NULL,
+    client_id uuid NOT NULL,
+    host_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    session_id uuid NOT NULL,
+    scope text NOT NULL,
+    binding jsonb NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    generation bigint DEFAULT 1 NOT NULL,
+    status text NOT NULL,
+    revoked_reason text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT auth_workflow_grant_t_generation_check CHECK ((generation > 0)),
+    CONSTRAINT auth_workflow_grant_t_status_check CHECK ((status = ANY (ARRAY['ACTIVE'::text, 'REVOKED'::text])))
+);
+
+
+--
+-- Name: TABLE auth_workflow_grant_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_workflow_grant_t IS 'Issuer-owned workflow authorization state; runtime access requires an active authenticated client.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.grant_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.grant_id IS 'Grant id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.auth_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.auth_host_id IS 'Auth host id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.provider_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.provider_id IS 'Provider id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.client_id IS 'Client id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.host_id IS 'Host id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.user_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.user_id IS 'User id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.session_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.session_id IS 'Session id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.scope; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.scope IS 'Scope for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.binding; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.binding IS 'Immutable consented workflow or schedule authorization ceiling.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.expires_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.expires_at IS 'Expires at for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.generation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.generation IS 'Generation for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.status IS 'Status for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.revoked_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.revoked_reason IS 'Revoked reason for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_grant_t.created_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_grant_t.created_at IS 'Created at for this issuer-owned authorization record.';
+
+
+--
+-- Name: auth_workflow_revocation_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_workflow_revocation_t (
+    auth_host_id uuid NOT NULL,
+    provider_id text NOT NULL,
+    client_id uuid NOT NULL,
+    grant_id uuid NOT NULL,
+    revoked_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+
+--
+-- Name: TABLE auth_workflow_revocation_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_workflow_revocation_t IS 'Durable issuer revocation tombstones, including not-yet-created grants; retained independently of client deletion.';
+
+
+--
+-- Name: COLUMN auth_workflow_revocation_t.auth_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_revocation_t.auth_host_id IS 'Auth host id of this irreversible issuer revocation.';
+
+
+--
+-- Name: COLUMN auth_workflow_revocation_t.provider_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_revocation_t.provider_id IS 'Provider id of this irreversible issuer revocation.';
+
+
+--
+-- Name: COLUMN auth_workflow_revocation_t.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_revocation_t.client_id IS 'Client id of this irreversible issuer revocation.';
+
+
+--
+-- Name: COLUMN auth_workflow_revocation_t.grant_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_revocation_t.grant_id IS 'Grant id of this irreversible issuer revocation.';
+
+
+--
+-- Name: COLUMN auth_workflow_revocation_t.revoked_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_revocation_t.revoked_at IS 'Revoked at of this irreversible issuer revocation.';
+
+
+--
+-- Name: auth_workflow_token_history_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_workflow_token_history_t (
+    token_hash text NOT NULL,
+    grant_id uuid NOT NULL,
+    generation bigint NOT NULL,
+    CONSTRAINT auth_workflow_token_history_t_generation_check CHECK ((generation > 0)),
+    CONSTRAINT auth_workflow_token_history_t_token_hash_check CHECK ((token_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: TABLE auth_workflow_token_history_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_workflow_token_history_t IS 'Issuer-owned workflow authorization state; runtime access requires an active authenticated client.';
+
+
+--
+-- Name: COLUMN auth_workflow_token_history_t.token_hash; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_token_history_t.token_hash IS 'SHA-256 of the consumed or current refresh identifier; never a replacement bearer token.';
+
+
+--
+-- Name: COLUMN auth_workflow_token_history_t.grant_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_token_history_t.grant_id IS 'Grant id for this issuer-owned authorization record.';
+
+
+--
+-- Name: COLUMN auth_workflow_token_history_t.generation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_token_history_t.generation IS 'Generation for this issuer-owned authorization record.';
 
 
 --
@@ -41610,6 +42174,14 @@ ALTER TABLE ONLY public.auth_ref_token_t
 
 
 --
+-- Name: auth_refresh_claim_source_t auth_refresh_claim_source_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_refresh_claim_source_t
+    ADD CONSTRAINT auth_refresh_claim_source_t_pkey PRIMARY KEY (auth_host_id, client_id, claim_name);
+
+
+--
 -- Name: auth_refresh_token_t auth_refresh_token_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -41631,6 +42203,78 @@ ALTER TABLE ONLY public.auth_session_audit_t
 
 ALTER TABLE ONLY public.auth_session_t
     ADD CONSTRAINT auth_session_t_pkey PRIMARY KEY (host_id, session_id);
+
+
+--
+-- Name: auth_workflow_broker_certificate_t auth_workflow_broker_certificate_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_broker_certificate_t
+    ADD CONSTRAINT auth_workflow_broker_certificate_t_pkey PRIMARY KEY (auth_host_id, provider_id, client_id, certificate_sha256);
+
+
+--
+-- Name: auth_workflow_broker_t auth_workflow_broker_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_broker_t
+    ADD CONSTRAINT auth_workflow_broker_t_pkey PRIMARY KEY (auth_host_id, provider_id, client_id);
+
+
+--
+-- Name: auth_workflow_enrollment_t auth_workflow_enrollment_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_enrollment_t
+    ADD CONSTRAINT auth_workflow_enrollment_t_pkey PRIMARY KEY (enrollment_id);
+
+
+--
+-- Name: auth_workflow_enrollment_t auth_workflow_enrollment_t_session_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_enrollment_t
+    ADD CONSTRAINT auth_workflow_enrollment_t_session_id_key UNIQUE (session_id);
+
+
+--
+-- Name: auth_workflow_grant_t auth_workflow_grant_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_grant_t
+    ADD CONSTRAINT auth_workflow_grant_t_pkey PRIMARY KEY (grant_id);
+
+
+--
+-- Name: auth_workflow_grant_t auth_workflow_grant_t_session_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_grant_t
+    ADD CONSTRAINT auth_workflow_grant_t_session_id_key UNIQUE (session_id);
+
+
+--
+-- Name: auth_workflow_revocation_t auth_workflow_revocation_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_revocation_t
+    ADD CONSTRAINT auth_workflow_revocation_t_pkey PRIMARY KEY (auth_host_id, provider_id, client_id, grant_id);
+
+
+--
+-- Name: auth_workflow_token_history_t auth_workflow_token_history_t_grant_id_generation_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_token_history_t
+    ADD CONSTRAINT auth_workflow_token_history_t_grant_id_generation_key UNIQUE (grant_id, generation);
+
+
+--
+-- Name: auth_workflow_token_history_t auth_workflow_token_history_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_token_history_t
+    ADD CONSTRAINT auth_workflow_token_history_t_pkey PRIMARY KEY (token_hash);
 
 
 --
@@ -45731,6 +46375,13 @@ CREATE INDEX idx_wf_definition_owner_user ON public.wf_definition_t USING btree 
 
 
 --
+-- Name: instance_api_agent_identity_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX instance_api_agent_identity_uk ON public.instance_api_t USING btree (host_id, instance_api_id, api_version_id);
+
+
+--
 -- Name: instance_api_agent_runtime_identity_uk; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -47089,7 +47740,7 @@ ALTER TABLE ONLY public.agent_a2a_binding_t
 --
 
 ALTER TABLE ONLY public.agent_a2a_binding_t
-    ADD CONSTRAINT agent_a2a_binding_instance_agent_fk FOREIGN KEY (host_id, instance_api_id, runtime_instance_id, agent_def_id) REFERENCES public.instance_api_t(host_id, instance_api_id, instance_id, api_version_id) ON DELETE CASCADE;
+    ADD CONSTRAINT agent_a2a_binding_instance_agent_fk FOREIGN KEY (host_id, instance_api_id, agent_def_id) REFERENCES public.instance_api_t(host_id, instance_api_id, api_version_id) ON DELETE CASCADE;
 
 
 --
@@ -47114,6 +47765,14 @@ ALTER TABLE ONLY public.agent_a2a_binding_t
 
 ALTER TABLE ONLY public.agent_a2a_binding_t
     ADD CONSTRAINT agent_a2a_binding_retention_profile_fk FOREIGN KEY (host_id, retention_profile_id) REFERENCES public.a2a_artifact_retention_profile_t(host_id, retention_profile_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: agent_a2a_binding_t agent_a2a_binding_runtime_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agent_a2a_binding_t
+    ADD CONSTRAINT agent_a2a_binding_runtime_fk FOREIGN KEY (host_id, runtime_instance_id) REFERENCES public.instance_t(host_id, instance_id) ON DELETE CASCADE;
 
 
 --
@@ -47837,6 +48496,14 @@ ALTER TABLE ONLY public.auth_ref_token_t
 
 
 --
+-- Name: auth_refresh_claim_source_t auth_refresh_claim_source_t_auth_host_id_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_refresh_claim_source_t
+    ADD CONSTRAINT auth_refresh_claim_source_t_auth_host_id_client_id_fkey FOREIGN KEY (auth_host_id, client_id) REFERENCES public.auth_client_t(host_id, client_id);
+
+
+--
 -- Name: auth_refresh_token_t auth_refresh_token_session_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -47906,6 +48573,46 @@ ALTER TABLE ONLY public.auth_session_t
 
 ALTER TABLE ONLY public.auth_session_t
     ADD CONSTRAINT auth_session_t_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.user_t(user_id) ON DELETE CASCADE;
+
+
+--
+-- Name: auth_workflow_broker_certificate_t auth_workflow_broker_certific_auth_host_id_provider_id_cli_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_broker_certificate_t
+    ADD CONSTRAINT auth_workflow_broker_certific_auth_host_id_provider_id_cli_fkey FOREIGN KEY (auth_host_id, provider_id, client_id) REFERENCES public.auth_workflow_broker_t(auth_host_id, provider_id, client_id);
+
+
+--
+-- Name: auth_workflow_broker_t auth_workflow_broker_t_auth_host_id_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_broker_t
+    ADD CONSTRAINT auth_workflow_broker_t_auth_host_id_client_id_fkey FOREIGN KEY (auth_host_id, client_id) REFERENCES public.auth_client_t(host_id, client_id);
+
+
+--
+-- Name: auth_workflow_enrollment_t auth_workflow_enrollment_t_auth_host_id_provider_id_client_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_enrollment_t
+    ADD CONSTRAINT auth_workflow_enrollment_t_auth_host_id_provider_id_client_fkey FOREIGN KEY (auth_host_id, provider_id, client_id) REFERENCES public.auth_workflow_broker_t(auth_host_id, provider_id, client_id);
+
+
+--
+-- Name: auth_workflow_grant_t auth_workflow_grant_t_grant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_grant_t
+    ADD CONSTRAINT auth_workflow_grant_t_grant_id_fkey FOREIGN KEY (grant_id) REFERENCES public.auth_workflow_enrollment_t(enrollment_id);
+
+
+--
+-- Name: auth_workflow_token_history_t auth_workflow_token_history_t_grant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_token_history_t
+    ADD CONSTRAINT auth_workflow_token_history_t_grant_id_fkey FOREIGN KEY (grant_id) REFERENCES public.auth_workflow_grant_t(grant_id);
 
 
 --
@@ -50755,7 +51462,11 @@ INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, chi
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_provider_client_t', 'auth_provider_client_t_host_id_client_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_t', 'public', 'auth_refresh_claim_source_t', 'auth_refresh_claim_source_t_auth_host_id_client_id_fkey', 'IGNORE', 'NONE', 'Issuer-owned claim-source configuration retained; renewal requires an active authenticated client', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_ref_token_t', 'auth_ref_token_t_host_id_client_id_fkey', 'HARD_DELETE', 'NONE', 'Client deactivation revokes stored bearer JWT reference tokens', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_t', 'public', 'auth_workflow_broker_t', 'auth_workflow_broker_t_auth_host_id_client_id_fkey', 'IGNORE', 'NONE', 'Issuer-owned broker registration retained; every broker request requires an active client and active provider binding', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_provider_client_t', 'public', 'auth_code_t', 'auth_code_t_auth_host_id_client_id_provider_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable authentication runtime state', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
@@ -50949,6 +51660,8 @@ INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, chi
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'instance_t', 'public', 'access_target_t', 'access_target_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable access-target relationship', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'instance_t', 'public', 'agent_a2a_binding_t', 'agent_a2a_binding_runtime_fk', 'IGNORE', 'NONE', 'A2A runtime binding lifecycle is command-owned and independently audited', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'instance_t', 'public', 'agent_a2a_instance_publication_t', 'agent_a2a_instance_publication_runtime_fk', 'IGNORE', 'NONE', 'A2A instance publication lifecycle is immutable and command-owned', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'instance_t', 'public', 'auth_client_owner_t', 'auth_client_owner_t_host_id_instance_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
@@ -51092,7 +51805,7 @@ END
 $install_cascade_triggers$;
 
 COMMIT;
-\unrestrict 5E8R5bpWf8E8G0qhQuemxc32BZgpsRV9zjzvWexyr57OayUayhORA3i6NVhiWbh
+\unrestrict kta2dGIoiro6ZPEmX15GpvuVy1LsNPgpMpdASRiq0bbeFC44hhifcPxb8zcC7bK
 
 
 INSERT INTO public.user_t (user_id, language, first_name, last_name, email, user_type, verified, password)
