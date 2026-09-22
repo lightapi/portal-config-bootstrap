@@ -5,7 +5,7 @@ CREATE DATABASE configserver;
 -- PostgreSQL database dump
 --
 
-\restrict kta2dGIoiro6ZPEmX15GpvuVy1LsNPgpMpdASRiq0bbeFC44hhifcPxb8zcC7bK
+\restrict nzHW4nGLtsjYkUIDhefLcgdWI6QHVam2eD329VfeYKNZFLwj6AwZJaaxLfNj8nY
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg12+1)
 -- Dumped by pg_dump version 17.10 (Debian 17.10-1.pgdg12+1)
@@ -11907,6 +11907,160 @@ COMMENT ON COLUMN public.auth_code_t.update_user IS 'User or service principal t
 --
 
 COMMENT ON COLUMN public.auth_code_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: auth_device_authorization_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_device_authorization_t (
+    device_code_sha256 text NOT NULL,
+    user_code text NOT NULL,
+    auth_host_id uuid NOT NULL,
+    provider_id text NOT NULL,
+    client_id uuid NOT NULL,
+    requested_ip inet,
+    scope text,
+    status text NOT NULL,
+    user_id uuid,
+    host_id uuid,
+    remember boolean DEFAULT false NOT NULL,
+    session_id uuid,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    approved_at timestamp with time zone,
+    last_polled_at timestamp with time zone,
+    poll_interval_seconds integer NOT NULL,
+    CONSTRAINT auth_device_authorization_t_device_code_sha256_check CHECK ((device_code_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT auth_device_authorization_t_status_check CHECK ((status = ANY (ARRAY['PENDING'::text, 'APPROVED'::text, 'DENIED'::text, 'REDEEMED'::text]))),
+    CONSTRAINT auth_device_authorization_t_user_code_check CHECK ((user_code ~ '^[BCDFGHJKLMNPQRSTVWXZ]{8}$'::text))
+);
+
+
+--
+-- Name: TABLE auth_device_authorization_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_device_authorization_t IS 'Short-lived device sign-in requests (RFC 8628); the device code is stored only as its SHA-256. Requests expired for more than a day are deleted by light-oauth.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.device_code_sha256; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.device_code_sha256 IS 'SHA-256 of the secret device code held by the requesting CLI.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.user_code; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.user_code IS 'Normalized short code the user enters or opens on the approval page.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.auth_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.auth_host_id IS 'Auth host id of the device client.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.provider_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.provider_id IS 'Provider id of the device client.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.client_id IS 'The device client: a public or trusted client with client_profile cli.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.requested_ip; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.requested_ip IS 'Network address the device request came from, shown on the approval page.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.scope; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.scope IS 'Scope requested for the device login.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.status IS 'PENDING until a user approves or denies; REDEEMED once tokens were issued.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.user_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.user_id IS 'Approving user.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.host_id IS 'Host of the approving user.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.remember; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.remember IS 'Whether the approver chose the long remember-me lifetime.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.session_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.session_id IS 'Session created at approval.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.created_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.created_at IS 'When the device authorization was requested.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.expires_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.expires_at IS 'When the device code stops being redeemable.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.approved_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.approved_at IS 'When the user approved.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.last_polled_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.last_polled_at IS 'When the device last polled, for interval enforcement.';
+
+
+--
+-- Name: COLUMN auth_device_authorization_t.poll_interval_seconds; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_device_authorization_t.poll_interval_seconds IS 'Current required polling interval; grows on slow_down.';
 
 
 --
@@ -42126,6 +42280,22 @@ ALTER TABLE ONLY public.auth_code_t
 
 
 --
+-- Name: auth_device_authorization_t auth_device_authorization_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_device_authorization_t
+    ADD CONSTRAINT auth_device_authorization_t_pkey PRIMARY KEY (device_code_sha256);
+
+
+--
+-- Name: auth_device_authorization_t auth_device_authorization_t_session_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_device_authorization_t
+    ADD CONSTRAINT auth_device_authorization_t_session_id_key UNIQUE (session_id);
+
+
+--
 -- Name: auth_provider_api_t auth_provider_api_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -44867,6 +45037,20 @@ CREATE UNIQUE INDEX agent_turn_scheduling_request_uk ON public.agent_turn_t USIN
 --
 
 CREATE INDEX audit_log_idx1 ON public.audit_log_t USING btree (source_type_id, correlation_id, event_ts, user_id);
+
+
+--
+-- Name: auth_device_authorization_expiry_ix; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX auth_device_authorization_expiry_ix ON public.auth_device_authorization_t USING btree (expires_at);
+
+
+--
+-- Name: auth_device_authorization_pending_code_ux; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX auth_device_authorization_pending_code_ux ON public.auth_device_authorization_t USING btree (user_code) WHERE (status = 'PENDING'::text);
 
 
 --
@@ -48432,6 +48616,14 @@ ALTER TABLE ONLY public.auth_code_t
 
 
 --
+-- Name: auth_device_authorization_t auth_device_authorization_t_auth_host_id_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_device_authorization_t
+    ADD CONSTRAINT auth_device_authorization_t_auth_host_id_client_id_fkey FOREIGN KEY (auth_host_id, client_id) REFERENCES public.auth_client_t(host_id, client_id) ON DELETE CASCADE;
+
+
+--
 -- Name: auth_provider_api_t auth_provider_api_t_host_id_api_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -51460,6 +51652,8 @@ INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, chi
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_client_token_t', 'auth_client_token_t_host_id_client_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable authentication runtime state', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_t', 'public', 'auth_device_authorization_t', 'auth_device_authorization_t_auth_host_id_client_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable device sign-in requests; deleted with the client', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_provider_client_t', 'auth_provider_client_t_host_id_client_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_refresh_claim_source_t', 'auth_refresh_claim_source_t_auth_host_id_client_id_fkey', 'IGNORE', 'NONE', 'Issuer-owned claim-source configuration retained; renewal requires an active authenticated client', DEFAULT, CURRENT_TIMESTAMP);
@@ -51805,7 +51999,7 @@ END
 $install_cascade_triggers$;
 
 COMMIT;
-\unrestrict kta2dGIoiro6ZPEmX15GpvuVy1LsNPgpMpdASRiq0bbeFC44hhifcPxb8zcC7bK
+\unrestrict nzHW4nGLtsjYkUIDhefLcgdWI6QHVam2eD329VfeYKNZFLwj6AwZJaaxLfNj8nY
 
 
 INSERT INTO public.user_t (user_id, language, first_name, last_name, email, user_type, verified, password)
