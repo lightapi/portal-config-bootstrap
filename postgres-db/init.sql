@@ -21349,11 +21349,11 @@ CREATE TABLE public.gateway_tool_publication_t (
     CONSTRAINT gateway_tool_publication_t_aggregate_version_check CHECK ((aggregate_version > 0)),
     CONSTRAINT gateway_tool_publication_t_bindings_check CHECK ((jsonb_typeof(bindings) = 'array'::text)),
     CONSTRAINT gateway_tool_publication_t_candidate_digest_check CHECK (((candidate_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
-    CONSTRAINT gateway_tool_publication_t_check CHECK ((((publication_mode)::text = 'REPLACE_API_SCOPE'::text) = (scope_api_version_id IS NOT NULL))),
+    CONSTRAINT gateway_tool_publication_t_check CHECK ((((publication_mode)::text = ANY (ARRAY['REPLACE_API_SCOPE'::character varying::text, 'REMOVE_API_SCOPE'::character varying::text])) = (scope_api_version_id IS NOT NULL))),
     CONSTRAINT gateway_tool_publication_t_compiled_endpoint_rules_check CHECK (((compiled_endpoint_rules IS NULL) OR (jsonb_typeof(compiled_endpoint_rules) = 'object'::text))),
     CONSTRAINT gateway_tool_publication_t_compiled_rule_bodies_check CHECK (((compiled_rule_bodies IS NULL) OR (jsonb_typeof(compiled_rule_bodies) = 'object'::text))),
     CONSTRAINT gateway_tool_publication_t_compiled_tools_check CHECK ((jsonb_typeof(compiled_tools) = 'array'::text)),
-    CONSTRAINT gateway_tool_publication_t_publication_mode_check CHECK (((publication_mode)::text = ANY (ARRAY[('ADD_OR_UPDATE'::character varying)::text, ('REPLACE_API_SCOPE'::character varying)::text]))),
+    CONSTRAINT gateway_tool_publication_t_publication_mode_check CHECK (((publication_mode)::text = ANY (ARRAY[('ADD_OR_UPDATE'::character varying)::text, ('REPLACE_API_SCOPE'::character varying)::text, ('REMOVE_API_SCOPE'::character varying)::text, ('REMOVE_WORKFLOW_TOOLS'::character varying)::text]))),
     CONSTRAINT gateway_tool_publication_t_publication_version_check CHECK ((publication_version > 0))
 );
 
