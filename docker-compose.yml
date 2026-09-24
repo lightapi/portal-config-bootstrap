@@ -188,6 +188,8 @@ services:
     volumes:
       - ./hybrid-query/node1:/config
       - ./hybrid-query/service:/service
+      # Pin the Gateway's Cloudflare Origin certificate; ca.pem is the unrelated Networknt dev CA.
+      - ./light-gateway-rust/config/cert.pem:/run/secrets/gateway-trust.pem:ro
       - ${PORTAL_DATA_DIR:-./data}:/data
     ports:
       - 8440:8440
@@ -203,7 +205,8 @@ services:
       embedding-task.dimension: ${EMBEDDING_TASK_DIMENSION:-384}
       embedding-task.apiKey: ${GEMINI_API_KEY:-}
       JAVA_TOOL_OPTIONS: "-Djdk.internal.httpclient.disableHostnameVerification=true"
-      LIGHT_WORKFLOW_RULE_TEST_URL: "http://light-workflow:8436/rule/test"
+      LIGHT_GATEWAY_MCP_URL: "https://light-gateway:8443/mcp"
+      LIGHT_GATEWAY_TLS_CA_PATH: /run/secrets/gateway-trust.pem
     hostname: hybrid-query
     container_name: hybrid-query
     depends_on:
@@ -351,6 +354,8 @@ services:
       - ./light-workflow-rust/config/light-workflow.env
     volumes:
       - ./light-gateway-rust/config/ca.pem:/config/ca.pem:ro
+      - ./portal-service-rust/config/cert.pem:/config/cert.pem:ro
+      - ./portal-service-rust/config/key.pem:/config/key.pem:ro
       - ./light-workflow-rust/config/startup.yml:/config/startup.yml:ro
       - workflow-runtime-secrets:/run/secrets:ro
       - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
@@ -362,6 +367,9 @@ services:
       server.startOnRegistryFailure: "false"
       portalRegistry.portalUrl: "https://controller:8438"
       server.advertisedAddress: "light-workflow"
+      server.enableHttp: "false"
+      server.enableHttps: "true"
+      server.httpsPort: "8436"
       LIGHT_PORTAL_AUTHORIZATION: "${LIGHT_WORKFLOW_LIGHT_PORTAL_AUTHORIZATION:-Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IkFacDAyTUN1Y3J1WmZGSmJ5eUZ3dWcifQ.eyJpc3MiOiJ1cm46Y29tOm5ldHdvcmtudDpvYXV0aDI6djEiLCJhdWQiOiJ1cm46Y29tLm5ldHdvcmtudCIsInN1YiI6IjAxYTAxMWQwLWI1ZWMtNzliMC04OTU2LTI0Yzg3NDU2YWQzMCIsImV4cCI6MjEwMjM2NTM0MSwianRpIjoiOWlkTlRBNHNRc2U5eEVFMjFRblFKQSIsImlhdCI6MTc4NzAwNTM0MSwibmJmIjoxNzg3MDA1MjIxLCJ2ZXIiOiIxLjAiLCJjaWQiOiIwMWEwMTFkMC1iNWVjLTc5YjAtODk1Ni0yNGM4NzQ1NmFkMzAiLCJzY3AiOlsicG9ydGFsLnciLCJwb3J0YWwuciJdLCJjbGllbnRfaWQiOiIwMWEwMTFkMC1iNWVjLTc5YjAtODk1Ni0yNGM4NzQ1NmFkMzAiLCJzY29wZSI6InBvcnRhbC53IHBvcnRhbC5yIiwiZW52IjoiZGV2IiwiaG9zdCI6IjAxOTY0YjA1LTU1MmEtN2M0Yi05MTg0LTY4NTdlN2YzZGM1ZiIsInNpZCI6ImNvbS5uZXR3b3JrbnQud29ya2Zsb3ctMS4wLjAifQ.HklSKUh2NSjlf469kwmf0f0pi9ojSst8enegZ4ebAsfBRGyQD-VnOFWchWUSksej4ofpSQFFiE_YNVASVImQC487BX6uFstr74laaiTcvr87w4ze8UCjsYJYJaW3OjXtp9SeIkrZS6bbUzqjsAYYQ2CjgaCoZLgnrItZZx1xALwYKeWonMfbpq0iNs02KnZLpoT4DN4YMP1avnT4WzbB_2-FvFIryVL3ecGkt5xho7LOsyQSF5uwpR7V4AO_NmOHTVeOlhpt69lFlY16YeFtzoH87Y0g6fwYTfEsyZ283pIkP7qRXHDkg92KromkqGSmhY7_4Nhwv6mGWrtJ7XmAMg}"
       operationalStore.bindingId: 01a06356-a4aa-7528-838e-dfbbe90ec959
       operationalStore.bindingDigest: sha256:79a39f6ff78c336d6ac9b0dc711115750bf22be954c584fa836930150e3db09e
@@ -396,7 +404,7 @@ services:
       workflow-projection-sync:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8436/ready || exit 1"]
+      test: ["CMD-SHELL", "curl --fail --silent --show-error --cacert /config/ca.pem https://localhost:8436/ready || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -497,6 +505,7 @@ services:
       - gateway-runtime-secrets:/run/secrets:ro
     environment:
       LIGHT_RS_CONFIG_DIR: /config
+      mcp-router.workflow.invocationUrl: https://light-workflow:8436
       # ACCESS_CONTROL_ENABLED: "false"
       CLIENT_VERIFYHOSTNAME: "false"
       CLIENT_CACERTPATH: /config/ca.pem
