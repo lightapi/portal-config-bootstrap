@@ -5,10 +5,10 @@ CREATE DATABASE configserver;
 -- PostgreSQL database dump
 --
 
-\restrict kWseqSf31dqJSNZsVRone9nbbLkOcbLtsBENAhl0yrk7Jo3D7G2JBI4dUoNPflV
+\restrict cMA64JcNoRL7z3SfuEbnm9vQGNkof0qKx24koAfxfrOxUYGfid2oO99Qskd4vZH
 
--- Dumped from database version 17.10 (Debian 17.10-1.pgdg12+1)
--- Dumped by pg_dump version 17.10 (Debian 17.10-1.pgdg12+1)
+-- Dumped from database version 17.10
+-- Dumped by pg_dump version 17.10
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -21,6 +21,20 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+--
+-- Name: timescaledb; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION timescaledb; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION timescaledb IS 'Enables scalable inserts and complex queries for time-series data (Community Edition)';
+
 
 --
 -- Name: pg_trgm; Type: EXTENSION; Schema: -; Owner: -
@@ -52387,9 +52401,9 @@ INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, chi
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_provider_client_t', 'auth_provider_client_t_host_id_client_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
-    ('public', 'auth_client_t', 'public', 'auth_refresh_claim_source_t', 'auth_refresh_claim_source_t_auth_host_id_client_id_fkey', 'IGNORE', 'NONE', 'Issuer-owned claim-source configuration retained; renewal requires an active authenticated client', DEFAULT, CURRENT_TIMESTAMP);
-INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_ref_token_t', 'auth_ref_token_t_host_id_client_id_fkey', 'HARD_DELETE', 'NONE', 'Client deactivation revokes stored bearer JWT reference tokens', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_t', 'public', 'auth_refresh_claim_source_t', 'auth_refresh_claim_source_t_auth_host_id_client_id_fkey', 'IGNORE', 'NONE', 'Issuer-owned claim-source configuration retained; renewal requires an active authenticated client', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_workflow_broker_t', 'auth_workflow_broker_t_auth_host_id_client_id_fkey', 'IGNORE', 'NONE', 'Issuer-owned broker registration retained; every broker request requires an active client and active provider binding', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
@@ -52491,9 +52505,9 @@ INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, chi
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'host_t', 'public', 'auth_provider_t', 'auth_provider_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
-    ('public', 'host_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes refresh tokens even when auth_host_id differs', DEFAULT, CURRENT_TIMESTAMP);
-INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'host_t', 'public', 'auth_ref_token_t', 'auth_ref_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Host deactivation revokes stored bearer JWT reference tokens', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes refresh tokens even when auth_host_id differs', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'host_t', 'public', 'auth_session_audit_t', 'auth_session_audit_t_auth_host_id_fkey', 'IGNORE', 'NONE', 'Authentication audit history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
@@ -52732,7 +52746,7 @@ END
 $install_cascade_triggers$;
 
 COMMIT;
-\unrestrict kWseqSf31dqJSNZsVRone9nbbLkOcbLtsBENAhl0yrk7Jo3D7G2JBI4dUoNPflV
+\unrestrict cMA64JcNoRL7z3SfuEbnm9vQGNkof0qKx24koAfxfrOxUYGfid2oO99Qskd4vZH
 
 
 INSERT INTO public.user_t (user_id, language, first_name, last_name, email, user_type, verified, password)
