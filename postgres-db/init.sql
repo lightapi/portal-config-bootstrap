@@ -5,9 +5,9 @@ CREATE DATABASE configserver;
 -- PostgreSQL database dump
 --
 
-\restrict nzHW4nGLtsjYkUIDhefLcgdWI6QHVam2eD329VfeYKNZFLwj6AwZJaaxLfNj8nY
+\restrict Xwx9OanbBJvZCs3bEEC6EjMBhEWw9CVkOMzEDLeIixVRuNphw3Aaom6y32zqn3g
 
--- Dumped from database version 17.10 (Debian 17.10-1.pgdg12+1)
+-- Dumped from database version 17.10
 -- Dumped by pg_dump version 17.10 (Debian 17.10-1.pgdg12+1)
 
 SET statement_timeout = 0;
@@ -21,6 +21,20 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+--
+-- Name: timescaledb; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION timescaledb; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION timescaledb IS 'Enables scalable inserts and complex queries for time-series data (Community Edition)';
+
 
 --
 -- Name: pg_trgm; Type: EXTENSION; Schema: -; Owner: -
@@ -13564,6 +13578,70 @@ COMMENT ON COLUMN public.auth_workflow_grant_t.created_at IS 'Created at for thi
 
 
 --
+-- Name: auth_workflow_long_binding_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_workflow_long_binding_t (
+    binding_id uuid NOT NULL,
+    auth_host_id uuid NOT NULL,
+    provider_id text NOT NULL,
+    workflow_client_id uuid NOT NULL,
+    host_id uuid NOT NULL,
+    workflow_instance_id uuid NOT NULL,
+    owner_user_id uuid NOT NULL,
+    source_client_id uuid NOT NULL,
+    subject_token_sha256 text NOT NULL,
+    source_token_issued_at timestamp with time zone NOT NULL,
+    source_token_expires_at timestamp with time zone NOT NULL,
+    scope_set text NOT NULL,
+    registration_key_sha256 text NOT NULL,
+    registration_sha256 text NOT NULL,
+    state text NOT NULL,
+    version bigint DEFAULT 1 NOT NULL,
+    acceptance_sha256 text,
+    close_id uuid,
+    close_reason text,
+    terminal_version bigint,
+    revocation_id uuid,
+    revoked_by uuid,
+    revocation_reason text,
+    created_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    activated_ts timestamp with time zone,
+    closed_ts timestamp with time zone,
+    revoked_ts timestamp with time zone,
+    CONSTRAINT auth_workflow_long_binding_t_acceptance_sha256_check CHECK ((acceptance_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT auth_workflow_long_binding_t_close_reason_check CHECK ((close_reason = ANY (ARRAY['COMPLETED'::text, 'CANCELED'::text]))),
+    CONSTRAINT auth_workflow_long_binding_t_registration_key_sha256_check CHECK ((registration_key_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT auth_workflow_long_binding_t_registration_sha256_check CHECK ((registration_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT auth_workflow_long_binding_t_scope_set_check CHECK ((scope_set = 'portal.r portal.w'::text)),
+    CONSTRAINT auth_workflow_long_binding_t_state_check CHECK ((state = ANY (ARRAY['PENDING'::text, 'ACTIVE'::text, 'CLOSED'::text, 'REVOKED'::text]))),
+    CONSTRAINT auth_workflow_long_binding_t_subject_token_sha256_check CHECK ((subject_token_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT auth_workflow_long_binding_t_version_check CHECK ((version > 0))
+);
+
+
+--
+-- Name: TABLE auth_workflow_long_binding_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_workflow_long_binding_t IS 'Issuer-owned per-instance LONG Workflow owner authority; no plaintext source bearer is stored.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_t.subject_token_sha256; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_t.subject_token_sha256 IS 'Fingerprint of the original Portal user access token registered while valid.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_t.state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_t.state IS 'PENDING and ACTIVE may transition to terminal CLOSED or REVOKED; only ACTIVE exchanges.';
+
+
+--
 -- Name: auth_workflow_revocation_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -21349,7 +21427,7 @@ CREATE TABLE public.gateway_tool_publication_t (
     CONSTRAINT gateway_tool_publication_t_aggregate_version_check CHECK ((aggregate_version > 0)),
     CONSTRAINT gateway_tool_publication_t_bindings_check CHECK ((jsonb_typeof(bindings) = 'array'::text)),
     CONSTRAINT gateway_tool_publication_t_candidate_digest_check CHECK (((candidate_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
-    CONSTRAINT gateway_tool_publication_t_check CHECK ((((publication_mode)::text = ANY (ARRAY['REPLACE_API_SCOPE'::character varying::text, 'REMOVE_API_SCOPE'::character varying::text])) = (scope_api_version_id IS NOT NULL))),
+    CONSTRAINT gateway_tool_publication_t_check CHECK ((((publication_mode)::text = ANY (ARRAY['REPLACE_API_SCOPE'::text, 'REMOVE_API_SCOPE'::text])) = (scope_api_version_id IS NOT NULL))),
     CONSTRAINT gateway_tool_publication_t_compiled_endpoint_rules_check CHECK (((compiled_endpoint_rules IS NULL) OR (jsonb_typeof(compiled_endpoint_rules) = 'object'::text))),
     CONSTRAINT gateway_tool_publication_t_compiled_rule_bodies_check CHECK (((compiled_rule_bodies IS NULL) OR (jsonb_typeof(compiled_rule_bodies) = 'object'::text))),
     CONSTRAINT gateway_tool_publication_t_compiled_tools_check CHECK ((jsonb_typeof(compiled_tools) = 'array'::text)),
@@ -40578,12 +40656,14 @@ CREATE TABLE public.workflow_tool_access_request_t (
     target_wf_def_id uuid NOT NULL,
     requester_user_id uuid NOT NULL,
     approval_wf_def_id uuid NOT NULL,
-    approval_wf_instance_id character varying(126) NOT NULL,
+    approval_wf_instance_id character varying(126),
     approval_definition_digest character varying(71) NOT NULL,
     request_digest character varying(71) NOT NULL,
     justification character varying(2000) NOT NULL,
     status character varying(32) NOT NULL,
     decision_user_id uuid,
+    decision_id uuid,
+    decision_payload_digest character varying(71),
     decision_comment character varying(2000),
     requested_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     decided_ts timestamp with time zone,
@@ -40646,7 +40726,7 @@ COMMENT ON COLUMN public.workflow_tool_access_request_t.approval_wf_def_id IS 'I
 -- Name: COLUMN workflow_tool_access_request_t.approval_wf_instance_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.workflow_tool_access_request_t.approval_wf_instance_id IS 'Identifier for the related approval wf instance.';
+COMMENT ON COLUMN public.workflow_tool_access_request_t.approval_wf_instance_id IS 'Legacy Portal-start approval instance ID; new request-only starts keep the Workflow-owned link outside Portal.';
 
 
 --
@@ -42421,6 +42501,30 @@ ALTER TABLE ONLY public.auth_workflow_grant_t
 
 ALTER TABLE ONLY public.auth_workflow_grant_t
     ADD CONSTRAINT auth_workflow_grant_t_session_id_key UNIQUE (session_id);
+
+
+--
+-- Name: auth_workflow_long_binding_t auth_workflow_long_binding_t_auth_host_id_provider_id_work_key1; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_long_binding_t
+    ADD CONSTRAINT auth_workflow_long_binding_t_auth_host_id_provider_id_work_key1 UNIQUE (auth_host_id, provider_id, workflow_client_id, registration_key_sha256);
+
+
+--
+-- Name: auth_workflow_long_binding_t auth_workflow_long_binding_t_auth_host_id_provider_id_workf_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_long_binding_t
+    ADD CONSTRAINT auth_workflow_long_binding_t_auth_host_id_provider_id_workf_key UNIQUE (auth_host_id, provider_id, workflow_client_id, host_id, workflow_instance_id);
+
+
+--
+-- Name: auth_workflow_long_binding_t auth_workflow_long_binding_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_long_binding_t
+    ADD CONSTRAINT auth_workflow_long_binding_t_pkey PRIMARY KEY (binding_id);
 
 
 --
@@ -45054,6 +45158,13 @@ CREATE UNIQUE INDEX auth_device_authorization_pending_code_ux ON public.auth_dev
 
 
 --
+-- Name: auth_workflow_long_binding_owner_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX auth_workflow_long_binding_owner_idx ON public.auth_workflow_long_binding_t USING btree (host_id, owner_user_id, created_ts DESC);
+
+
+--
 -- Name: command_idempotency_retention_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -47102,6 +47213,7 @@ CREATE INDEX workflow_tool_access_request_requester_idx ON public.workflow_tool_
 --
 
 CREATE INDEX workflow_tool_access_request_target_idx ON public.workflow_tool_access_request_t USING btree (host_id, target_wf_def_id, status);
+CREATE UNIQUE INDEX workflow_tool_access_request_decision_uq ON public.workflow_tool_access_request_t USING btree (host_id, decision_id) WHERE decision_id IS NOT NULL;
 
 
 --
@@ -48797,6 +48909,14 @@ ALTER TABLE ONLY public.auth_workflow_enrollment_t
 
 ALTER TABLE ONLY public.auth_workflow_grant_t
     ADD CONSTRAINT auth_workflow_grant_t_grant_id_fkey FOREIGN KEY (grant_id) REFERENCES public.auth_workflow_enrollment_t(enrollment_id);
+
+
+--
+-- Name: auth_workflow_long_binding_t auth_workflow_long_client_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_long_binding_t
+    ADD CONSTRAINT auth_workflow_long_client_fk FOREIGN KEY (auth_host_id, workflow_client_id) REFERENCES public.auth_client_t(host_id, client_id);
 
 
 --
@@ -51656,11 +51776,13 @@ INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, chi
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_provider_client_t', 'auth_provider_client_t_host_id_client_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
-    ('public', 'auth_client_t', 'public', 'auth_refresh_claim_source_t', 'auth_refresh_claim_source_t_auth_host_id_client_id_fkey', 'IGNORE', 'NONE', 'Issuer-owned claim-source configuration retained; renewal requires an active authenticated client', DEFAULT, CURRENT_TIMESTAMP);
-INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_ref_token_t', 'auth_ref_token_t_host_id_client_id_fkey', 'HARD_DELETE', 'NONE', 'Client deactivation revokes stored bearer JWT reference tokens', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_t', 'public', 'auth_refresh_claim_source_t', 'auth_refresh_claim_source_t_auth_host_id_client_id_fkey', 'IGNORE', 'NONE', 'Issuer-owned claim-source configuration retained; renewal requires an active authenticated client', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_client_t', 'public', 'auth_workflow_broker_t', 'auth_workflow_broker_t_auth_host_id_client_id_fkey', 'IGNORE', 'NONE', 'Issuer-owned broker registration retained; every broker request requires an active client and active provider binding', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'auth_client_t', 'public', 'auth_workflow_long_binding_t', 'auth_workflow_long_client_fk', 'IGNORE', 'NONE', 'Issuer-owned LONG binding retained for audit; exchange requires an active Workflow client', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'auth_provider_client_t', 'public', 'auth_code_t', 'auth_code_t_auth_host_id_client_id_provider_id_fkey', 'HARD_DELETE', 'NONE', 'Non-restorable authentication runtime state', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
@@ -51758,9 +51880,9 @@ INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, chi
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'host_t', 'public', 'auth_provider_t', 'auth_provider_t_host_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
-    ('public', 'host_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes refresh tokens even when auth_host_id differs', DEFAULT, CURRENT_TIMESTAMP);
-INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'host_t', 'public', 'auth_ref_token_t', 'auth_ref_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Host deactivation revokes stored bearer JWT reference tokens', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'host_t', 'public', 'auth_refresh_token_t', 'auth_refresh_token_t_host_id_fkey', 'HARD_DELETE', 'NONE', 'Tenant host deactivation revokes refresh tokens even when auth_host_id differs', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'host_t', 'public', 'auth_session_audit_t', 'auth_session_audit_t_auth_host_id_fkey', 'IGNORE', 'NONE', 'Authentication audit history is retained independently', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
@@ -51999,7 +52121,7 @@ END
 $install_cascade_triggers$;
 
 COMMIT;
-\unrestrict nzHW4nGLtsjYkUIDhefLcgdWI6QHVam2eD329VfeYKNZFLwj6AwZJaaxLfNj8nY
+\unrestrict Xwx9OanbBJvZCs3bEEC6EjMBhEWw9CVkOMzEDLeIixVRuNphw3Aaom6y32zqn3g
 
 
 INSERT INTO public.user_t (user_id, language, first_name, last_name, email, user_type, verified, password)
