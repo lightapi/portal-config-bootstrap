@@ -68,6 +68,14 @@ grep -q 'validate-operational-databases.sh' "$compose_file" ||
   fail "multi-database validation is not wired"
 grep -q 'OPERATIONAL_BUNDLE_VERSION: 2.4.0' "$compose_file" ||
   fail "Compose does not select the current operational bundle"
+grep -q 'server.enableHttp: "false"' "$compose_file" ||
+  fail "Workflow HTTP listener is not disabled"
+grep -q 'server.enableHttps: "true"' "$compose_file" ||
+  fail "Workflow HTTPS listener is not enabled"
+grep -q 'mcp-router.workflow.invocationUrl: https://light-workflow:8436' "$compose_file" ||
+  fail "Gateway does not invoke Workflow over HTTPS"
+grep -q 'https://localhost:8436/ready' "$compose_file" ||
+  fail "Workflow readiness check does not use HTTPS"
 jq -e '.bundleVersion == "2.4.0"' "$operations_root/bundle/manifest.json" >/dev/null ||
   fail "operational bundle manifest version does not match Compose"
 grep -q $'\tworkflow-store\tworkflow_ops\t0019_workflow_binding_read_fields\t' \
