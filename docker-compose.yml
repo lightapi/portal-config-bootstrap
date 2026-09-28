@@ -609,6 +609,7 @@ services:
       - ./postgres-db/secrets/a2a-authorized-context-key:/run/secrets/a2a-authorized-context-key:ro
     environment:
       LIGHT_RS_CONFIG_DIR: /config
+      LIGHT_AGENT_DB_MAX_CONNECTIONS: "${LIGHT_AGENT_DB_MAX_CONNECTIONS:-4}"
       LIGHT_PORTAL_AUTHORIZATION: "${LIGHT_AGENT_LIGHT_PORTAL_AUTHORIZATION:-}"
       LIGHT_AGENT_HOST_ID: "${LIGHT_AGENT_HOST_ID:-01964b05-552a-7c4b-9184-6857e7f3dc5f}"
       LIGHT_AGENT_AGENT_DEF_ID: "${LIGHT_AGENT_AGENT_DEF_ID:-}"
