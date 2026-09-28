@@ -3,6 +3,9 @@
 Bundle 2.0.0 introduced the Host-scoped CUSTOMER_MANAGED binding. Bundle 2.1.0
 adds the Workflow-owned endpoint-resolution projection. Environment remains
 runtime-instance routing metadata and is not part of database ownership.
+The current pinned bundle is 2.4.0 and includes Workflow migrations through
+0019_workflow_binding_read_fields. Bootstrap applies missing migrations to an
+existing operational database without recreating it.
 
 The pinned bundle under `bundle/` is applied to all three local operational
 databases declared by `operational-databases.tsv`:

@@ -67,7 +67,7 @@ services:
       POSTGRES_USER: postgres
       PGPASSWORD: secret
       OPERATIONAL_CONTRACT_GENERATION: 2
-      OPERATIONAL_BUNDLE_VERSION: 2.1.0
+      OPERATIONAL_BUNDLE_VERSION: 2.4.0
     depends_on:
       postgres:
         condition: service_healthy

@@ -66,8 +66,13 @@ grep -q 'bootstrap-operational-databases.sh' "$compose_file" ||
   fail "multi-database bootstrap is not wired"
 grep -q 'validate-operational-databases.sh' "$compose_file" ||
   fail "multi-database validation is not wired"
-grep -q 'OPERATIONAL_BUNDLE_VERSION: 2.1.0' "$compose_file" ||
-  fail "Compose does not select the Workflow projection bundle"
+grep -q 'OPERATIONAL_BUNDLE_VERSION: 2.4.0' "$compose_file" ||
+  fail "Compose does not select the current operational bundle"
+jq -e '.bundleVersion == "2.4.0"' "$operations_root/bundle/manifest.json" >/dev/null ||
+  fail "operational bundle manifest version does not match Compose"
+grep -q $'\tworkflow-store\tworkflow_ops\t0019_workflow_binding_read_fields\t' \
+  "$operations_root/bundle/migration-order.tsv" ||
+  fail "operational bundle is missing current Workflow migrations"
 [[ -x "$workflow_projection_script" ]] ||
   fail "Workflow projection publisher is missing or not executable"
 grep -q '^  workflow-projection-sync:' "$compose_file" ||
