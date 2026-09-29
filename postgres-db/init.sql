@@ -5,7 +5,7 @@ CREATE DATABASE configserver;
 -- PostgreSQL database dump
 --
 
-\restrict cMA64JcNoRL7z3SfuEbnm9vQGNkof0qKx24koAfxfrOxUYGfid2oO99Qskd4vZH
+\restrict NxmieKSAUd1gVhjBFXOsM1rFbWdFFq5ySDvHN3bj9cN50lLtEYS5EQCenOjF7F2
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 17.10
@@ -13601,6 +13601,86 @@ COMMENT ON COLUMN public.auth_workflow_grant_t.revoked_reason IS 'Revoked reason
 --
 
 COMMENT ON COLUMN public.auth_workflow_grant_t.created_at IS 'Created at for this issuer-owned authorization record.';
+
+
+--
+-- Name: auth_workflow_long_binding_deleted_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_workflow_long_binding_deleted_t (
+    binding_id uuid NOT NULL,
+    auth_host_id uuid NOT NULL,
+    provider_id text NOT NULL,
+    workflow_client_id uuid NOT NULL,
+    host_id uuid NOT NULL,
+    workflow_instance_id uuid NOT NULL,
+    issuer_version bigint NOT NULL,
+    deleted_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT auth_workflow_long_binding_deleted_t_issuer_version_check CHECK ((issuer_version > 0))
+);
+
+
+--
+-- Name: TABLE auth_workflow_long_binding_deleted_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.auth_workflow_long_binding_deleted_t IS 'Portal-projected deletion acknowledgement used to authenticate late issuer closes across host deactivation and reactivation; excluded from snapshots.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_deleted_t.binding_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_deleted_t.binding_id IS 'Identifier of the deleted LONG Workflow binding.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_deleted_t.auth_host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_deleted_t.auth_host_id IS 'Auth host of the deleted binding issuer.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_deleted_t.provider_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_deleted_t.provider_id IS 'OAuth provider of the deleted binding issuer.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_deleted_t.workflow_client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_deleted_t.workflow_client_id IS 'Workflow OAuth client that owned the deleted binding.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_deleted_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_deleted_t.host_id IS 'Portal host that owned the deleted binding; retained independently of host lifecycle.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_deleted_t.workflow_instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_deleted_t.workflow_instance_id IS 'Workflow instance associated with the deleted binding.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_deleted_t.issuer_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_deleted_t.issuer_version IS 'Issuer binding version acknowledged for a late terminal close.';
+
+
+--
+-- Name: COLUMN auth_workflow_long_binding_deleted_t.deleted_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.auth_workflow_long_binding_deleted_t.deleted_ts IS 'Time the Portal projector removed the active binding.';
 
 
 --
@@ -43077,6 +43157,14 @@ ALTER TABLE ONLY public.auth_workflow_grant_t
 
 
 --
+-- Name: auth_workflow_long_binding_deleted_t auth_workflow_long_binding_deleted_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_workflow_long_binding_deleted_t
+    ADD CONSTRAINT auth_workflow_long_binding_deleted_t_pkey PRIMARY KEY (binding_id);
+
+
+--
 -- Name: auth_workflow_long_binding_t auth_workflow_long_binding_t_auth_host_id_provider_id_work_key1; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -52746,7 +52834,7 @@ END
 $install_cascade_triggers$;
 
 COMMIT;
-\unrestrict cMA64JcNoRL7z3SfuEbnm9vQGNkof0qKx24koAfxfrOxUYGfid2oO99Qskd4vZH
+\unrestrict NxmieKSAUd1gVhjBFXOsM1rFbWdFFq5ySDvHN3bj9cN50lLtEYS5EQCenOjF7F2
 
 
 INSERT INTO public.user_t (user_id, language, first_name, last_name, email, user_type, verified, password)
