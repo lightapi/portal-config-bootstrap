@@ -7,7 +7,7 @@ manifest="${OPERATIONAL_DATABASE_MANIFEST:-/opt/operational-store/operational-da
 secret_root="${OPERATIONAL_HOST_SECRET_ROOT:-/run/secrets/operational-hosts}"
 database_host="${OPERATIONAL_DATABASE_HOST:-postgres}"
 database_port="${OPERATIONAL_DATABASE_PORT:-5432}"
-bundle_version="${OPERATIONAL_BUNDLE_VERSION:-2.4.0}"
+bundle_version="${OPERATIONAL_BUNDLE_VERSION:-2.6.0}"
 contract_generation="${OPERATIONAL_CONTRACT_GENERATION:-2}"
 
 fail() {
@@ -28,6 +28,8 @@ fi
 manifest_bundle_version="$(awk -F '"' '/"bundleVersion"/ { print $4; exit }' "$bundle_root/manifest.json")"
 [[ "$manifest_bundle_version" == "$bundle_version" ]] ||
   fail "bundle manifest version does not match OPERATIONAL_BUNDLE_VERSION"
+
+/bin/bash "$(dirname -- "${BASH_SOURCE[0]}")/verify-operational-bundle.sh"
 
 umask 077
 mkdir -p "$secret_root"
