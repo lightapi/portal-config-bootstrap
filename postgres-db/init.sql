@@ -5,7 +5,7 @@ CREATE DATABASE configserver;
 -- PostgreSQL database dump
 --
 
-\restrict I0Hv4ORXfCvGrdmzsQsFO2yVm3EoSrLVszrwqPanajXT4MDiHAeU9qU4fcYWbjb
+\restrict ZPTCXqMckzwW1CzxL9jCSb8bU7eiff3Gn3OQr0OSLkvTPZGdMoO5kIJQ5rZFJr9
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 17.10
@@ -1875,8 +1875,8 @@ BEGIN
         SELECT t.host_id,
                MIN(CASE t.execution_class WHEN 'interactive' THEN 0 WHEN 'standard' THEN 1 ELSE 2 END) class_rank,
                MAX(t.priority) maximum_priority,MIN(t.started_ts) oldest_task
-          FROM task_info_t t
-         WHERE t.active AND t.execution_placement='host'
+          FROM public.task_info_t t JOIN public.process_info_t p ON p.host_id=t.host_id AND p.process_id=t.process_id
+         WHERE p.expression_profile='cel-workflow-v1' AND t.active AND t.execution_placement='host'
            AND ((t.status_code='A' AND t.task_type IN ('ask','assert','call','set','switch','fork'))
              OR (t.status_code='C' AND t.task_type='ask' AND t.completed_ts IS NOT NULL
                  AND (t.task_output IS NULL OR t.task_output->>'status'='waiting_for_input')))
@@ -1885,19 +1885,19 @@ BEGIN
            AND (t.locked='N' OR (t.locked='Y' AND t.lease_expires_ts<=CURRENT_TIMESTAMP))
            AND (t.deadline_ts IS NULL OR t.deadline_ts>CURRENT_TIMESTAMP)
          GROUP BY t.host_id
-    ) candidates LEFT JOIN workflow_executor_tenant_turn_t turn ON turn.host_id=candidates.host_id
+    ) candidates LEFT JOIN public.workflow_executor_tenant_turn_t turn ON turn.host_id=candidates.host_id
     ORDER BY candidates.class_rank,COALESCE(turn.last_claim_ts,'-infinity'::timestamptz),
              candidates.maximum_priority DESC,candidates.oldest_task,candidates.host_id LIMIT 1;
     IF claimed_host IS NULL THEN RETURN; END IF;
     IF NOT pg_try_advisory_xact_lock(hashtext(claimed_host::text)) THEN RETURN; END IF;
-    INSERT INTO workflow_executor_tenant_turn_t(host_id,last_claim_ts,claim_count)
+    INSERT INTO public.workflow_executor_tenant_turn_t(host_id,last_claim_ts,claim_count)
     VALUES(claimed_host,CURRENT_TIMESTAMP,1)
     ON CONFLICT ON CONSTRAINT workflow_executor_tenant_turn_t_pkey DO UPDATE SET
       last_claim_ts=EXCLUDED.last_claim_ts,claim_count=workflow_executor_tenant_turn_t.claim_count+1,
       updated_ts=CURRENT_TIMESTAMP;
     RETURN QUERY WITH candidate AS (
-      SELECT t.host_id,t.task_id FROM task_info_t t
-       WHERE t.host_id=claimed_host AND t.active AND t.execution_placement='host'
+      SELECT t.host_id,t.task_id FROM public.task_info_t t JOIN public.process_info_t p ON p.host_id=t.host_id AND p.process_id=t.process_id
+       WHERE p.expression_profile='cel-workflow-v1' AND t.host_id=claimed_host AND t.active AND t.execution_placement='host'
          AND ((t.status_code='A' AND t.task_type IN ('ask','assert','call','set','switch','fork'))
            OR (t.status_code='C' AND t.task_type='ask' AND t.completed_ts IS NOT NULL
                AND (t.task_output IS NULL OR t.task_output->>'status'='waiting_for_input')))
@@ -1906,8 +1906,65 @@ BEGIN
          AND (t.locked='N' OR (t.locked='Y' AND t.lease_expires_ts<=CURRENT_TIMESTAMP))
          AND (t.deadline_ts IS NULL OR t.deadline_ts>CURRENT_TIMESTAMP)
        ORDER BY CASE t.execution_class WHEN 'interactive' THEN 0 WHEN 'standard' THEN 1 ELSE 2 END,
-                t.priority DESC,t.started_ts,t.task_id LIMIT 1 FOR UPDATE SKIP LOCKED
-    ) UPDATE task_info_t t SET locked='Y',lease_owner=p_worker_id,
+                t.priority DESC,t.started_ts,t.task_id LIMIT 1 FOR UPDATE OF t SKIP LOCKED
+    ) UPDATE public.task_info_t t SET locked='Y',lease_owner=p_worker_id,
+      lease_fencing_token=t.lease_fencing_token+1,
+      lease_expires_ts=LEAST(COALESCE(t.deadline_ts,'infinity'::timestamptz),
+        CURRENT_TIMESTAMP+make_interval(secs=>p_lease_ms::double precision/1000.0)),update_ts=CURRENT_TIMESTAMP
+      FROM candidate c WHERE t.host_id=c.host_id AND t.task_id=c.task_id
+    RETURNING t.host_id,t.task_id,t.task_type,t.process_id,t.wf_instance_id,t.wf_task_id,
+              t.status_code,t.result_code,t.lease_owner,t.lease_fencing_token,t.lease_expires_ts;
+END
+$$;
+
+
+--
+-- Name: workflow_claim_host_task_v2(uuid, integer, text[]); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.workflow_claim_host_task_v2(p_worker_id uuid, p_lease_ms integer, p_supported_profiles text[]) RETURNS TABLE(host_id uuid, task_id uuid, task_type character varying, process_id uuid, wf_instance_id character varying, wf_task_id character varying, status_code character, result_code character varying, lease_owner uuid, lease_fencing_token bigint, lease_expires_ts timestamp with time zone)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE claimed_host UUID;
+BEGIN
+    IF p_lease_ms<100 OR p_lease_ms>30000 THEN RAISE EXCEPTION 'WORKFLOW_HOST_LEASE_MS_OUT_OF_RANGE'; END IF;
+    SELECT candidates.host_id INTO claimed_host FROM (
+        SELECT t.host_id,
+               MIN(CASE t.execution_class WHEN 'interactive' THEN 0 WHEN 'standard' THEN 1 ELSE 2 END) class_rank,
+               MAX(t.priority) maximum_priority,MIN(t.started_ts) oldest_task
+          FROM public.task_info_t t JOIN public.process_info_t p ON p.host_id=t.host_id AND p.process_id=t.process_id
+         WHERE p.expression_profile=ANY(p_supported_profiles) AND t.active AND t.execution_placement='host'
+           AND ((t.status_code='A' AND t.task_type IN ('ask','assert','call','set','switch','fork'))
+             OR (t.status_code='C' AND t.task_type='ask' AND t.completed_ts IS NOT NULL
+                 AND (t.task_output IS NULL OR t.task_output->>'status'='waiting_for_input')))
+           AND t.next_attempt_ts<=CURRENT_TIMESTAMP
+           AND (t.effect_state='none' OR t.downstream_idempotency_key IS NOT NULL)
+           AND (t.locked='N' OR (t.locked='Y' AND t.lease_expires_ts<=CURRENT_TIMESTAMP))
+           AND (t.deadline_ts IS NULL OR t.deadline_ts>CURRENT_TIMESTAMP)
+         GROUP BY t.host_id
+    ) candidates LEFT JOIN public.workflow_executor_tenant_turn_t turn ON turn.host_id=candidates.host_id
+    ORDER BY candidates.class_rank,COALESCE(turn.last_claim_ts,'-infinity'::timestamptz),
+             candidates.maximum_priority DESC,candidates.oldest_task,candidates.host_id LIMIT 1;
+    IF claimed_host IS NULL THEN RETURN; END IF;
+    IF NOT pg_try_advisory_xact_lock(hashtext(claimed_host::text)) THEN RETURN; END IF;
+    INSERT INTO public.workflow_executor_tenant_turn_t(host_id,last_claim_ts,claim_count)
+    VALUES(claimed_host,CURRENT_TIMESTAMP,1)
+    ON CONFLICT ON CONSTRAINT workflow_executor_tenant_turn_t_pkey DO UPDATE SET
+      last_claim_ts=EXCLUDED.last_claim_ts,claim_count=workflow_executor_tenant_turn_t.claim_count+1,
+      updated_ts=CURRENT_TIMESTAMP;
+    RETURN QUERY WITH candidate AS (
+      SELECT t.host_id,t.task_id FROM public.task_info_t t JOIN public.process_info_t p ON p.host_id=t.host_id AND p.process_id=t.process_id
+       WHERE p.expression_profile=ANY(p_supported_profiles) AND t.host_id=claimed_host AND t.active AND t.execution_placement='host'
+         AND ((t.status_code='A' AND t.task_type IN ('ask','assert','call','set','switch','fork'))
+           OR (t.status_code='C' AND t.task_type='ask' AND t.completed_ts IS NOT NULL
+               AND (t.task_output IS NULL OR t.task_output->>'status'='waiting_for_input')))
+         AND t.next_attempt_ts<=CURRENT_TIMESTAMP
+         AND (t.effect_state='none' OR t.downstream_idempotency_key IS NOT NULL)
+         AND (t.locked='N' OR (t.locked='Y' AND t.lease_expires_ts<=CURRENT_TIMESTAMP))
+         AND (t.deadline_ts IS NULL OR t.deadline_ts>CURRENT_TIMESTAMP)
+       ORDER BY CASE t.execution_class WHEN 'interactive' THEN 0 WHEN 'standard' THEN 1 ELSE 2 END,
+                t.priority DESC,t.started_ts,t.task_id LIMIT 1 FOR UPDATE OF t SKIP LOCKED
+    ) UPDATE public.task_info_t t SET locked='Y',lease_owner=p_worker_id,
       lease_fencing_token=t.lease_fencing_token+1,
       lease_expires_ts=LEAST(COALESCE(t.deadline_ts,'infinity'::timestamptz),
         CURRENT_TIMESTAMP+make_interval(secs=>p_lease_ms::double precision/1000.0)),update_ts=CURRENT_TIMESTAMP
@@ -2014,6 +2071,55 @@ BEGIN
     RETURN FOUND;
 END
 $$;
+
+
+--
+-- Name: workflow_durable_evidence_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.workflow_durable_evidence_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP IN ('DELETE','TRUNCATE') THEN RAISE EXCEPTION 'WORKFLOW_DURABLE_EVIDENCE_RETENTION_REQUIRED'; END IF;
+    IF TG_TABLE_NAME = 'workflow_command_receipt_t' THEN
+        RAISE EXCEPTION 'WORKFLOW_COMMAND_RECEIPT_IMMUTABLE';
+    END IF;
+    IF TG_TABLE_NAME = 'workflow_start_request_t' THEN
+        IF (to_jsonb(NEW) - 'receipt') IS DISTINCT FROM (to_jsonb(OLD) - 'receipt')
+           OR OLD.receipt IS NOT NULL OR NEW.receipt IS NULL THEN
+            RAISE EXCEPTION 'WORKFLOW_START_IDENTITY_IMMUTABLE';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (to_jsonb(NEW) - ARRAY['state','generation','lease_token','lease_until','attempts',
+                             'receipt','receipt_digest','error_code','updated_ts'])
+        IS DISTINCT FROM
+       (to_jsonb(OLD) - ARRAY['state','generation','lease_token','lease_until','attempts',
+                             'receipt','receipt_digest','error_code','updated_ts']) THEN
+        RAISE EXCEPTION 'WORKFLOW_DELIVERY_IDENTITY_IMMUTABLE';
+    END IF;
+    IF OLD.state IN ('completed','superseded') THEN
+        RAISE EXCEPTION 'WORKFLOW_DELIVERY_TERMINAL_IMMUTABLE';
+    END IF;
+    IF NEW.state = 'claimed' THEN
+        IF NEW.generation <> OLD.generation + 1
+           OR NEW.lease_token IS NOT DISTINCT FROM OLD.lease_token
+           OR NEW.attempts <> OLD.attempts + 1
+           OR (OLD.state = 'claimed' AND OLD.lease_until > CURRENT_TIMESTAMP) THEN
+            RAISE EXCEPTION 'WORKFLOW_DELIVERY_CLAIM_FENCE';
+        END IF;
+    ELSIF NEW.generation <> OLD.generation OR NEW.attempts <> OLD.attempts THEN
+        RAISE EXCEPTION 'WORKFLOW_DELIVERY_GENERATION_IMMUTABLE';
+    END IF;
+    IF NEW.state = 'completed' AND OLD.state <> 'claimed' THEN
+        RAISE EXCEPTION 'WORKFLOW_DELIVERY_RECEIPT_REQUIRES_CLAIM';
+    END IF;
+    IF NEW.state = 'pending' AND OLD.state NOT IN ('pending','claimed') THEN
+        RAISE EXCEPTION 'WORKFLOW_DELIVERY_EXPLICIT_RETRY_REQUIRED';
+    END IF;
+    RETURN NEW;
+END $$;
 
 
 --
@@ -29907,7 +30013,13 @@ CREATE TABLE public.process_info_t (
     policy_snapshot_id uuid,
     policy_digest character varying(64),
     source_event_id character varying(126),
-    execution_profile_id character varying(126)
+    execution_profile_id character varying(126),
+    expression_profile character varying(64) DEFAULT 'cel-workflow-v1'::character varying NOT NULL,
+    CONSTRAINT process_expression_profile_snapshot_ck CHECK ((
+CASE
+    WHEN (NOT COALESCE(((definition_snapshot #> '{document,metadata}'::text[]) ? 'lightExpressionProfile'::text), false)) THEN ((expression_profile)::text = 'cel-workflow-v1'::text)
+    ELSE (((expression_profile)::text = 'cel-workflow-v2'::text) AND (definition_snapshot IS NOT NULL) AND (jsonb_typeof((definition_snapshot #> '{document,metadata,lightExpressionProfile}'::text[])) = 'string'::text) AND ((definition_snapshot #> '{document,metadata,lightExpressionProfile}'::text[]) = '"cel-workflow-v2"'::jsonb))
+END IS TRUE))
 );
 
 
@@ -30315,6 +30427,13 @@ COMMENT ON COLUMN public.process_info_t.source_event_id IS 'Identifier for the r
 --
 
 COMMENT ON COLUMN public.process_info_t.execution_profile_id IS 'Identifier for the related execution profile.';
+
+
+--
+-- Name: COLUMN process_info_t.expression_profile; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.process_info_t.expression_profile IS 'Immutable expression evaluator profile selected from the process definition snapshot.';
 
 
 --
@@ -38741,6 +38860,326 @@ COMMENT ON COLUMN public.workflow_artifact_t.provenance_digest IS 'Integrity dig
 
 
 --
+-- Name: workflow_command_receipt_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.workflow_command_receipt_t (
+    host_id uuid NOT NULL,
+    command_id uuid NOT NULL,
+    actor_id uuid NOT NULL,
+    command_type text NOT NULL,
+    command_key character varying(128) NOT NULL,
+    request_text text NOT NULL,
+    request_digest character varying(64) NOT NULL,
+    acceptance jsonb NOT NULL,
+    accepted_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT workflow_command_receipt_t_acceptance_check CHECK ((jsonb_typeof(acceptance) = 'object'::text)),
+    CONSTRAINT workflow_command_receipt_t_command_key_check CHECK ((length((command_key)::text) > 0)),
+    CONSTRAINT workflow_command_receipt_t_request_digest_check CHECK (((request_digest)::text ~ '^[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: TABLE workflow_command_receipt_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.workflow_command_receipt_t IS 'Durable exact principal-bound Portal acceptance. Excluded from event projection rebuild. Indefinite retention until separately reviewed archival policy.';
+
+
+--
+-- Name: COLUMN workflow_command_receipt_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_command_receipt_t.host_id IS 'Owning host and durable tenant boundary for the Workflow record.';
+
+
+--
+-- Name: COLUMN workflow_command_receipt_t.command_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_command_receipt_t.command_id IS 'Identifier of the explicitly accepted Portal command.';
+
+
+--
+-- Name: COLUMN workflow_command_receipt_t.actor_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_command_receipt_t.actor_id IS 'Authenticated caller whose command or retry identity owns this record.';
+
+
+--
+-- Name: COLUMN workflow_command_receipt_t.command_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_command_receipt_t.command_type IS 'Portal command kind recorded with its durable acceptance.';
+
+
+--
+-- Name: COLUMN workflow_command_receipt_t.command_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_command_receipt_t.command_key IS 'Same-caller idempotency key; never a global recovery selector.';
+
+
+--
+-- Name: COLUMN workflow_command_receipt_t.request_text; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_command_receipt_t.request_text IS 'Exact serialized request retained for retry identity comparison.';
+
+
+--
+-- Name: COLUMN workflow_command_receipt_t.request_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_command_receipt_t.request_digest IS 'SHA-256 digest of the retained request text.';
+
+
+--
+-- Name: COLUMN workflow_command_receipt_t.acceptance; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_command_receipt_t.acceptance IS 'Durable Portal acceptance evidence returned for the accepted command.';
+
+
+--
+-- Name: COLUMN workflow_command_receipt_t.accepted_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_command_receipt_t.accepted_ts IS 'Timestamp at which Portal durably accepted the command.';
+
+
+--
+-- Name: workflow_delivery_intent_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.workflow_delivery_intent_t (
+    host_id uuid NOT NULL,
+    intent_id uuid NOT NULL,
+    command_id uuid NOT NULL,
+    event_id uuid NOT NULL,
+    wf_def_id uuid NOT NULL,
+    sync_kind character varying(16) NOT NULL,
+    source_revision bigint NOT NULL,
+    definition_revision bigint NOT NULL,
+    expression_profile character varying(64) NOT NULL,
+    authored_content_digest character varying(64) NOT NULL,
+    definition_digest character varying(71) NOT NULL,
+    grant_set_digest character varying(71),
+    actor_id uuid NOT NULL,
+    payload jsonb NOT NULL,
+    payload_digest character varying(64) NOT NULL,
+    state character varying(16) DEFAULT 'pending'::character varying NOT NULL,
+    generation bigint DEFAULT 0 NOT NULL,
+    lease_token uuid,
+    lease_until timestamp with time zone,
+    attempts integer DEFAULT 0 NOT NULL,
+    receipt jsonb,
+    receipt_digest character varying(64),
+    error_code text,
+    created_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT workflow_delivery_intent_t_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT workflow_delivery_intent_t_authored_content_digest_check CHECK (((authored_content_digest)::text ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT workflow_delivery_intent_t_check CHECK (((((payload ->> 'hostId'::text) = (host_id)::text) AND ((payload ->> 'wfDefId'::text) = (wf_def_id)::text) AND ((payload -> 'sourceRevision'::text) = to_jsonb(source_revision)) AND ((payload ->> 'actor'::text) = (actor_id)::text)) IS TRUE)),
+    CONSTRAINT workflow_delivery_intent_t_check1 CHECK (((((sync_kind)::text = 'definition'::text) AND (grant_set_digest IS NULL)) OR (((sync_kind)::text = 'grants'::text) AND (grant_set_digest IS NOT NULL) AND ((grant_set_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)))),
+    CONSTRAINT workflow_delivery_intent_t_check2 CHECK (((((state)::text = 'claimed'::text) AND (lease_token IS NOT NULL) AND (lease_until IS NOT NULL)) OR (((state)::text <> 'claimed'::text) AND (lease_token IS NULL) AND (lease_until IS NULL)))),
+    CONSTRAINT workflow_delivery_intent_t_check3 CHECK ((((((state)::text = 'completed'::text) AND (receipt IS NOT NULL) AND (jsonb_typeof(receipt) = 'object'::text) AND (receipt_digest IS NOT NULL) AND ((receipt_digest)::text ~ '^[0-9a-f]{64}$'::text) AND ((receipt ->> 'wfDefId'::text) = (wf_def_id)::text) AND ((receipt -> 'appliedRevision'::text) = to_jsonb(source_revision)) AND ((((sync_kind)::text = 'definition'::text) AND ((receipt ->> 'result'::text) = ANY (ARRAY['saved'::text, 'unchanged'::text])) AND ((receipt ->> 'definitionDigest'::text) = (definition_digest)::text)) OR (((sync_kind)::text = 'grants'::text) AND ((receipt ->> 'result'::text) = ANY (ARRAY['synced'::text, 'unchanged'::text])) AND ((receipt ->> 'grantSetDigest'::text) = (grant_set_digest)::text)))) OR (((state)::text <> 'completed'::text) AND (receipt IS NULL) AND (receipt_digest IS NULL))) IS TRUE)),
+    CONSTRAINT workflow_delivery_intent_t_definition_digest_check CHECK (((definition_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT workflow_delivery_intent_t_definition_revision_check CHECK ((definition_revision > 0)),
+    CONSTRAINT workflow_delivery_intent_t_expression_profile_check CHECK (((expression_profile)::text = 'cel-workflow-v2'::text)),
+    CONSTRAINT workflow_delivery_intent_t_generation_check CHECK ((generation >= 0)),
+    CONSTRAINT workflow_delivery_intent_t_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT workflow_delivery_intent_t_payload_digest_check CHECK (((payload_digest)::text ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT workflow_delivery_intent_t_source_revision_check CHECK ((source_revision > 0)),
+    CONSTRAINT workflow_delivery_intent_t_state_check CHECK (((state)::text = ANY ((ARRAY['pending'::character varying, 'claimed'::character varying, 'completed'::character varying, 'blocked'::character varying, 'superseded'::character varying])::text[]))),
+    CONSTRAINT workflow_delivery_intent_t_sync_kind_check CHECK (((sync_kind)::text = ANY ((ARRAY['definition'::character varying, 'grants'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE workflow_delivery_intent_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.workflow_delivery_intent_t IS 'Fresh-command v2 delivery authority. Immutable pinned identity/payload; claim generation and lease fence every receipt. No event replay backfill.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.host_id IS 'Owning host and durable tenant boundary for the Workflow record.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.intent_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.intent_id IS 'Identifier of an explicitly recorded delivery intent.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.command_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.command_id IS 'Identifier of the explicitly accepted Portal command.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.event_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.event_id IS 'Source event associated with the accepted command and intent.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.wf_def_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.wf_def_id IS 'Workflow definition identifier within the owning host.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.sync_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.sync_kind IS 'Explicit synchronization kind: definition or grants.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.source_revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.source_revision IS 'Positive Portal source revision identifying this synchronization payload.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.definition_revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.definition_revision IS 'Workflow definition revision associated with the source payload.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.expression_profile; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.expression_profile IS 'Accepted immutable expression evaluator profile for this definition.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.authored_content_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.authored_content_digest IS 'Digest identifying the authored definition content.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.definition_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.definition_digest IS 'SHA-256 identity of the definition contract.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.grant_set_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.grant_set_digest IS 'Digest identifying the explicit grant set.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.actor_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.actor_id IS 'Authenticated caller whose command or retry identity owns this record.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.payload; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.payload IS 'Explicit serialized synchronization payload bound to host, definition and source revision.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.payload_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.payload_digest IS 'SHA-256 digest of the serialized delivery payload.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.state IS 'Delivery state: pending, claimed, completed, blocked or superseded.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.generation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.generation IS 'Monotonic claim generation used to fence delivery ownership.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.lease_token; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.lease_token IS 'Unique token fencing the current delivery claim.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.lease_until; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.lease_until IS 'Expiration timestamp of the current delivery lease.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.attempts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.attempts IS 'Count of explicitly attempted deliveries.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.receipt; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.receipt IS 'Retained receiver receipt; presence does not independently imply operational acceptance.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.receipt_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.receipt_digest IS 'SHA-256 digest identifying the retained receiver receipt.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.error_code; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.error_code IS 'Bounded error classification for a failed or blocked delivery.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.created_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.created_ts IS 'Timestamp when this durable record was created.';
+
+
+--
+-- Name: COLUMN workflow_delivery_intent_t.updated_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_delivery_intent_t.updated_ts IS 'Timestamp of the latest authorized record update.';
+
+
+--
 -- Name: workflow_endpoint_target_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -38980,6 +39419,53 @@ COMMENT ON COLUMN public.workflow_executor_tenant_turn_t.claim_count IS 'Count o
 --
 
 COMMENT ON COLUMN public.workflow_executor_tenant_turn_t.updated_ts IS 'Timestamp for the updated event or state.';
+
+
+--
+-- Name: workflow_expression_profile_policy_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.workflow_expression_profile_policy_t (
+    profile_id character varying(64) NOT NULL,
+    admission_enabled boolean DEFAULT false NOT NULL,
+    updated_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_by character varying(126) DEFAULT SESSION_USER NOT NULL
+);
+
+
+--
+-- Name: TABLE workflow_expression_profile_policy_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.workflow_expression_profile_policy_t IS 'Deployment-controlled admission switch; application admission must lock FOR SHARE in its admitting transaction.';
+
+
+--
+-- Name: COLUMN workflow_expression_profile_policy_t.profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_expression_profile_policy_t.profile_id IS 'Expression evaluator profile controlled by the admission policy.';
+
+
+--
+-- Name: COLUMN workflow_expression_profile_policy_t.admission_enabled; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_expression_profile_policy_t.admission_enabled IS 'Deployment-controlled admission switch; fresh cel-workflow-v2 seed is OFF.';
+
+
+--
+-- Name: COLUMN workflow_expression_profile_policy_t.updated_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_expression_profile_policy_t.updated_ts IS 'Timestamp of the latest authorized record update.';
+
+
+--
+-- Name: COLUMN workflow_expression_profile_policy_t.updated_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_expression_profile_policy_t.updated_by IS 'Database session identity responsible for the policy update.';
 
 
 --
@@ -40372,6 +40858,107 @@ COMMENT ON COLUMN public.workflow_operation_t.update_ts IS 'Time this operation 
 
 
 --
+-- Name: workflow_start_request_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.workflow_start_request_t (
+    host_id uuid NOT NULL,
+    actor_id uuid NOT NULL,
+    command_key character varying(128) NOT NULL,
+    request_text text NOT NULL,
+    request_digest character varying(64) NOT NULL,
+    wf_def_id uuid NOT NULL,
+    definition_digest character varying(71) NOT NULL,
+    outbound_request jsonb NOT NULL,
+    receipt jsonb,
+    created_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT workflow_start_request_t_check CHECK (((((outbound_request ->> 'workflowDefinitionId'::text) = (wf_def_id)::text) AND ((outbound_request ->> 'idempotencyKey'::text) = (command_key)::text) AND ((outbound_request ->> 'expectedDefinitionDigest'::text) = (definition_digest)::text)) IS TRUE)),
+    CONSTRAINT workflow_start_request_t_check1 CHECK ((((receipt IS NULL) OR ((jsonb_typeof(receipt) = 'object'::text) AND ((receipt -> 'accepted'::text) = 'true'::jsonb) AND ((receipt ->> 'workflowDefinitionId'::text) = (wf_def_id)::text))) IS TRUE)),
+    CONSTRAINT workflow_start_request_t_command_key_check CHECK ((length((command_key)::text) > 0)),
+    CONSTRAINT workflow_start_request_t_definition_digest_check CHECK (((definition_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT workflow_start_request_t_outbound_request_check CHECK ((jsonb_typeof(outbound_request) = 'object'::text)),
+    CONSTRAINT workflow_start_request_t_request_digest_check CHECK (((request_digest)::text ~ '^[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: TABLE workflow_start_request_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.workflow_start_request_t IS 'Explicit same-caller v2 start retry identity; pending is not operational acceptance and never background-resends.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.host_id IS 'Owning host and durable tenant boundary for the Workflow record.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.actor_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.actor_id IS 'Authenticated caller whose command or retry identity owns this record.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.command_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.command_key IS 'Same-caller idempotency key; never a global recovery selector.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.request_text; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.request_text IS 'Exact serialized request retained for retry identity comparison.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.request_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.request_digest IS 'SHA-256 digest of the retained request text.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.wf_def_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.wf_def_id IS 'Workflow definition identifier within the owning host.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.definition_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.definition_digest IS 'SHA-256 identity of the definition contract.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.outbound_request; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.outbound_request IS 'Exact outbound start request retained for explicit same-caller retry.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.receipt; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.receipt IS 'Retained receiver receipt; presence does not independently imply operational acceptance.';
+
+
+--
+-- Name: COLUMN workflow_start_request_t.created_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_start_request_t.created_ts IS 'Timestamp when this durable record was created.';
+
+
+--
 -- Name: workflow_sync_state_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -40484,6 +41071,100 @@ COMMENT ON COLUMN public.workflow_sync_state_t.last_error_message IS 'Last synch
 --
 
 COMMENT ON COLUMN public.workflow_sync_state_t.update_ts IS 'Time this synchronization row was last updated.';
+
+
+--
+-- Name: workflow_sync_target_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.workflow_sync_target_t (
+    host_id uuid NOT NULL,
+    wf_def_id uuid NOT NULL,
+    sync_kind character varying(16) NOT NULL,
+    source_revision bigint NOT NULL,
+    definition_revision bigint NOT NULL,
+    expression_profile character varying(64) NOT NULL,
+    definition_source text NOT NULL,
+    definition_digest character varying(71) NOT NULL,
+    payload jsonb NOT NULL,
+    CONSTRAINT workflow_sync_target_t_check CHECK (((((payload ->> 'hostId'::text) = (host_id)::text) AND ((payload ->> 'wfDefId'::text) = (wf_def_id)::text) AND ((payload -> 'sourceRevision'::text) = to_jsonb(source_revision))) IS TRUE)),
+    CONSTRAINT workflow_sync_target_t_definition_digest_check CHECK (((definition_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
+    CONSTRAINT workflow_sync_target_t_definition_revision_check CHECK ((definition_revision > 0)),
+    CONSTRAINT workflow_sync_target_t_expression_profile_check CHECK (((expression_profile)::text = ANY ((ARRAY['cel-workflow-v1'::character varying, 'cel-workflow-v2'::character varying])::text[]))),
+    CONSTRAINT workflow_sync_target_t_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT workflow_sync_target_t_source_revision_check CHECK ((source_revision > 0)),
+    CONSTRAINT workflow_sync_target_t_sync_kind_check CHECK (((sync_kind)::text = ANY ((ARRAY['definition'::character varying, 'grants'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE workflow_sync_target_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.workflow_sync_target_t IS 'Portal current explicit Workflow synchronization target, bound to source revision and payload identity.';
+
+
+--
+-- Name: COLUMN workflow_sync_target_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_sync_target_t.host_id IS 'Owning host and durable tenant boundary for the Workflow record.';
+
+
+--
+-- Name: COLUMN workflow_sync_target_t.wf_def_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_sync_target_t.wf_def_id IS 'Workflow definition identifier within the owning host.';
+
+
+--
+-- Name: COLUMN workflow_sync_target_t.sync_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_sync_target_t.sync_kind IS 'Explicit synchronization kind: definition or grants.';
+
+
+--
+-- Name: COLUMN workflow_sync_target_t.source_revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_sync_target_t.source_revision IS 'Positive Portal source revision identifying this synchronization payload.';
+
+
+--
+-- Name: COLUMN workflow_sync_target_t.definition_revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_sync_target_t.definition_revision IS 'Workflow definition revision associated with the source payload.';
+
+
+--
+-- Name: COLUMN workflow_sync_target_t.expression_profile; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_sync_target_t.expression_profile IS 'Accepted immutable expression evaluator profile for this definition.';
+
+
+--
+-- Name: COLUMN workflow_sync_target_t.definition_source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_sync_target_t.definition_source IS 'Authored definition source retained for the current synchronization target.';
+
+
+--
+-- Name: COLUMN workflow_sync_target_t.definition_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_sync_target_t.definition_digest IS 'SHA-256 identity of the definition contract.';
+
+
+--
+-- Name: COLUMN workflow_sync_target_t.payload; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_sync_target_t.payload IS 'Explicit serialized synchronization payload bound to host, definition and source revision.';
 
 
 --
@@ -41465,6 +42146,61 @@ COMMENT ON COLUMN public.workflow_tool_grant_t.update_user IS 'User or service p
 --
 
 COMMENT ON COLUMN public.workflow_tool_grant_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: workflow_worker_capability_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.workflow_worker_capability_t (
+    instance_id uuid NOT NULL,
+    binary_version text NOT NULL,
+    supported_profiles text[] NOT NULL,
+    admits_profiles text[] NOT NULL,
+    heartbeat_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+
+--
+-- Name: TABLE workflow_worker_capability_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.workflow_worker_capability_t IS 'Worker capability heartbeat evidence; absence does not prove that no old worker exists.';
+
+
+--
+-- Name: COLUMN workflow_worker_capability_t.instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_worker_capability_t.instance_id IS 'Identity of the worker instance publishing capability evidence.';
+
+
+--
+-- Name: COLUMN workflow_worker_capability_t.binary_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_worker_capability_t.binary_version IS 'Worker binary version associated with the capability report.';
+
+
+--
+-- Name: COLUMN workflow_worker_capability_t.supported_profiles; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_worker_capability_t.supported_profiles IS 'Expression profiles supported by the reporting worker binary.';
+
+
+--
+-- Name: COLUMN workflow_worker_capability_t.admits_profiles; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_worker_capability_t.admits_profiles IS 'Expression profiles the reporting worker is configured to admit.';
+
+
+--
+-- Name: COLUMN workflow_worker_capability_t.heartbeat_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_worker_capability_t.heartbeat_ts IS 'Timestamp of the latest worker capability heartbeat.';
 
 
 --
@@ -44690,6 +45426,46 @@ ALTER TABLE ONLY public.workflow_artifact_t
 
 
 --
+-- Name: workflow_command_receipt_t workflow_command_receipt_t_host_id_actor_id_command_type_co_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_command_receipt_t
+    ADD CONSTRAINT workflow_command_receipt_t_host_id_actor_id_command_type_co_key UNIQUE (host_id, actor_id, command_type, command_key);
+
+
+--
+-- Name: workflow_command_receipt_t workflow_command_receipt_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_command_receipt_t
+    ADD CONSTRAINT workflow_command_receipt_t_pkey PRIMARY KEY (host_id, command_id);
+
+
+--
+-- Name: workflow_delivery_intent_t workflow_delivery_intent_t_host_id_command_id_event_id_wf_d_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_delivery_intent_t
+    ADD CONSTRAINT workflow_delivery_intent_t_host_id_command_id_event_id_wf_d_key UNIQUE (host_id, command_id, event_id, wf_def_id, sync_kind);
+
+
+--
+-- Name: workflow_delivery_intent_t workflow_delivery_intent_t_host_id_wf_def_id_sync_kind_sour_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_delivery_intent_t
+    ADD CONSTRAINT workflow_delivery_intent_t_host_id_wf_def_id_sync_kind_sour_key UNIQUE (host_id, wf_def_id, sync_kind, source_revision);
+
+
+--
+-- Name: workflow_delivery_intent_t workflow_delivery_intent_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_delivery_intent_t
+    ADD CONSTRAINT workflow_delivery_intent_t_pkey PRIMARY KEY (host_id, intent_id);
+
+
+--
 -- Name: workflow_endpoint_target_t workflow_endpoint_target_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -44727,6 +45503,14 @@ ALTER TABLE ONLY public.workflow_execution_policy_t
 
 ALTER TABLE ONLY public.workflow_executor_tenant_turn_t
     ADD CONSTRAINT workflow_executor_tenant_turn_t_pkey PRIMARY KEY (host_id);
+
+
+--
+-- Name: workflow_expression_profile_policy_t workflow_expression_profile_policy_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_expression_profile_policy_t
+    ADD CONSTRAINT workflow_expression_profile_policy_t_pkey PRIMARY KEY (profile_id);
 
 
 --
@@ -44850,11 +45634,27 @@ ALTER TABLE ONLY public.workflow_operation_t
 
 
 --
+-- Name: workflow_start_request_t workflow_start_request_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_start_request_t
+    ADD CONSTRAINT workflow_start_request_t_pkey PRIMARY KEY (host_id, actor_id, command_key);
+
+
+--
 -- Name: workflow_sync_state_t workflow_sync_state_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.workflow_sync_state_t
     ADD CONSTRAINT workflow_sync_state_t_pkey PRIMARY KEY (host_id, wf_def_id, sync_kind);
+
+
+--
+-- Name: workflow_sync_target_t workflow_sync_target_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_sync_target_t
+    ADD CONSTRAINT workflow_sync_target_t_pkey PRIMARY KEY (host_id, wf_def_id, sync_kind, source_revision);
 
 
 --
@@ -44943,6 +45743,14 @@ ALTER TABLE ONLY public.workflow_tool_dependency_t
 
 ALTER TABLE ONLY public.workflow_tool_grant_t
     ADD CONSTRAINT workflow_tool_grant_t_pkey PRIMARY KEY (host_id, grant_id);
+
+
+--
+-- Name: workflow_worker_capability_t workflow_worker_capability_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_worker_capability_t
+    ADD CONSTRAINT workflow_worker_capability_t_pkey PRIMARY KEY (instance_id);
 
 
 --
@@ -47076,6 +47884,13 @@ CREATE UNIQUE INDEX pii_token_vault_value_uk ON public.pii_token_vault_t USING b
 
 
 --
+-- Name: process_expression_profile_claim_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX process_expression_profile_claim_idx ON public.process_info_t USING btree (expression_profile, host_id, process_id);
+
+
+--
 -- Name: process_info_source_event_uk; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -47262,6 +48077,13 @@ CREATE UNIQUE INDEX workflow_approval_active_uk ON public.workflow_approval_t US
 --
 
 CREATE INDEX workflow_artifact_retention_idx ON public.workflow_artifact_t USING btree (deletion_state, legal_hold, retain_until_ts, deletion_next_retry_ts) WHERE ((deletion_state)::text = ANY (ARRAY[('RETAINED'::character varying)::text, ('DELETE_PENDING'::character varying)::text, ('DELETE_FAILED'::character varying)::text]));
+
+
+--
+-- Name: workflow_delivery_claim_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX workflow_delivery_claim_idx ON public.workflow_delivery_intent_t USING btree (host_id, wf_def_id, sync_kind, source_revision, state);
 
 
 --
@@ -48000,6 +48822,34 @@ CREATE TRIGGER trg_wf_definition_owner_user BEFORE INSERT ON public.wf_definitio
 
 
 --
+-- Name: workflow_command_receipt_t workflow_command_receipt_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER workflow_command_receipt_guard BEFORE DELETE OR UPDATE ON public.workflow_command_receipt_t FOR EACH ROW EXECUTE FUNCTION public.workflow_durable_evidence_guard();
+
+
+--
+-- Name: workflow_command_receipt_t workflow_command_receipt_truncate_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER workflow_command_receipt_truncate_guard BEFORE TRUNCATE ON public.workflow_command_receipt_t FOR EACH STATEMENT EXECUTE FUNCTION public.workflow_durable_evidence_guard();
+
+
+--
+-- Name: workflow_delivery_intent_t workflow_delivery_intent_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER workflow_delivery_intent_guard BEFORE DELETE OR UPDATE ON public.workflow_delivery_intent_t FOR EACH ROW EXECUTE FUNCTION public.workflow_durable_evidence_guard();
+
+
+--
+-- Name: workflow_delivery_intent_t workflow_delivery_intent_truncate_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER workflow_delivery_intent_truncate_guard BEFORE TRUNCATE ON public.workflow_delivery_intent_t FOR EACH STATEMENT EXECUTE FUNCTION public.workflow_durable_evidence_guard();
+
+
+--
 -- Name: workflow_invocation_t workflow_invocation_state_v1_trg; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -48018,6 +48868,20 @@ CREATE TRIGGER workflow_operation_guard_trg BEFORE INSERT OR UPDATE ON public.wo
 --
 
 CREATE TRIGGER workflow_quarantined_outbox_retention_v1_trg BEFORE DELETE ON public.outbox_message_t FOR EACH ROW EXECUTE FUNCTION public.guard_quarantined_workflow_outbox_v1();
+
+
+--
+-- Name: workflow_start_request_t workflow_start_request_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER workflow_start_request_guard BEFORE DELETE OR UPDATE ON public.workflow_start_request_t FOR EACH ROW EXECUTE FUNCTION public.workflow_durable_evidence_guard();
+
+
+--
+-- Name: workflow_start_request_t workflow_start_request_truncate_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER workflow_start_request_truncate_guard BEFORE TRUNCATE ON public.workflow_start_request_t FOR EACH STATEMENT EXECUTE FUNCTION public.workflow_durable_evidence_guard();
 
 
 --
@@ -51020,6 +51884,14 @@ ALTER TABLE ONLY public.workflow_artifact_t
 
 
 --
+-- Name: workflow_delivery_intent_t workflow_delivery_intent_t_host_id_command_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.workflow_delivery_intent_t
+    ADD CONSTRAINT workflow_delivery_intent_t_host_id_command_id_fkey FOREIGN KEY (host_id, command_id) REFERENCES public.workflow_command_receipt_t(host_id, command_id);
+
+
+--
 -- Name: workflow_endpoint_target_t workflow_endpoint_target_t_host_id_binding_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -51244,6 +52116,13 @@ ALTER TABLE ONLY public.worklist_column_t
 
 
 --
+-- Name: FUNCTION workflow_claim_host_task_v2(p_worker_id uuid, p_lease_ms integer, p_supported_profiles text[]); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.workflow_claim_host_task_v2(p_worker_id uuid, p_lease_ms integer, p_supported_profiles text[]) FROM PUBLIC;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
@@ -51281,6 +52160,8 @@ INSERT INTO public.operational_store_profile_t (profile_id, profile_version, dep
     ('dev-dedicated-postgres-v1', 1, 'DEV_DEDICATED', 'POSTGRESQL', '{"databaseIdentity":"operations","databasePerHostEnvironment":true,"pooled":false,"providerAdapter":"postgres17-pgvector-container"}', 1, false, 'p7-compatibility-closure', CURRENT_TIMESTAMP) ON CONFLICT (profile_id, profile_version) DO NOTHING;
 ALTER TABLE public.operational_store_profile_t ENABLE TRIGGER operational_store_legacy_profile_write_guard_trg;
 COMMIT;
+INSERT INTO public.workflow_expression_profile_policy_t (profile_id, admission_enabled, updated_ts, updated_by) VALUES
+    ('cel-workflow-v2', false, CURRENT_TIMESTAMP, DEFAULT) ON CONFLICT (profile_id) DO NOTHING;
 -- Generated by bin/generate-ddl.py; do not edit.
 SET search_path = public;
 BEGIN;
@@ -52213,7 +53094,7 @@ END
 $install_cascade_triggers$;
 
 COMMIT;
-\unrestrict I0Hv4ORXfCvGrdmzsQsFO2yVm3EoSrLVszrwqPanajXT4MDiHAeU9qU4fcYWbjb
+\unrestrict ZPTCXqMckzwW1CzxL9jCSb8bU7eiff3Gn3OQr0OSLkvTPZGdMoO5kIJQ5rZFJr9
 
 
 INSERT INTO public.user_t (user_id, language, first_name, last_name, email, user_type, verified, password)
