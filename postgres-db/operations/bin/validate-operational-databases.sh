@@ -15,6 +15,8 @@ fail() {
 }
 
 [[ -f "$manifest" && -f "$bundle_root/migration-order.tsv" ]] || fail "manifest or migration order is missing"
+/bin/bash "$(dirname -- "${BASH_SOURCE[0]}")/verify-operational-bundle.sh"
+
 expected_migration_count="$(awk -F '\t' 'NF && $1 !~ /^#/ { count++ } END { print count + 0 }' "$bundle_root/migration-order.tsv")"
 [[ "$expected_migration_count" -gt 0 ]] || fail "migration order is empty"
 
@@ -71,6 +73,19 @@ SELECT NOT EXISTS (
 SQL
 )"
   [[ "$schema_ready" == "t" ]] || fail "schema contract is incomplete for $database_name"
+
+  workflow_ready="$(psql -U "$database_user" -d "$database_name" -X -tA --set=ON_ERROR_STOP=1 --set=runtime_role="${database_name}_workflow_runtime" <<'SQL'
+SELECT to_regclass('workflow_ops.workflow_task_timer_t') IS NOT NULL
+ AND to_regclass('workflow_ops.workflow_expression_profile_policy_t') IS NOT NULL
+ AND to_regclass('workflow_ops.workflow_worker_capability_t') IS NOT NULL
+ AND to_regclass('workflow_ops.workflow_operation_receipt_t') IS NOT NULL
+ AND to_regprocedure('workflow_ops.workflow_claim_host_task_v2(uuid,integer,text[])') IS NOT NULL
+ AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='workflow_ops' AND table_name='process_info_t' AND column_name='expression_profile')
+ AND has_table_privilege(:'runtime_role','workflow_ops.workflow_expression_profile_policy_t','SELECT')
+ AND NOT has_table_privilege(:'runtime_role','workflow_ops.workflow_expression_profile_policy_t','INSERT,UPDATE,DELETE,TRUNCATE');
+SQL
+)"
+  [[ "$workflow_ready" == t ]] || fail "Workflow schema or runtime policy ACL is invalid for $database_name"
 
   actual_migration_count="$(psql -U "$database_user" -d "$database_name" -X -tAc     "SELECT count(*) FROM operational_meta.operational_schema_migration_t")"
   [[ "$actual_migration_count" == "$expected_migration_count" ]] ||
