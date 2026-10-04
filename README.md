@@ -217,3 +217,16 @@ flowchart LR
 The signed baseline owns the three canonical Hosts; release deltas remain
 available for older pinned baselines. Keep customer-specific Host exports outside Git in
 `data/private-event-deltas`; see [the private delta guide](events/PRIVATE_INSTANCE_DELTAS.md).
+
+## Packaged Portal services
+
+Command/query JARs are included in the hybrid images. Set
+`PORTAL_HYBRID_COMMAND_IMAGE` and `PORTAL_HYBRID_QUERY_IMAGE` to packaged image
+references in the deployment environment file. Existing 2.2.1 wrapper images
+that depended on host JARs are unsuitable. Compose requires both selections and
+mounts configuration directories only; there are no host service-JAR folders.
+Asset synchronization retains UI assets and does not download hybrid ZIPs.
+
+For direct Compose use, pass the selected environment file with `--env-file`.
+Use the existing deployment entry point for the complete environment and startup
+ordering; updating source files does not restart already-created containers.

@@ -9,8 +9,6 @@ Download the current runtime asset archives from the CDN and sync them into
 the Bootstrap baseline services.
 
 Synced assets:
-  hybrid-command.zip -> hybrid-command/service/
-  hybrid-query.zip   -> hybrid-query/service/
   lightapi.zip       -> light-gateway-rust/lightapi/
   signin.zip         -> light-gateway-rust/signin/
 
@@ -116,12 +114,10 @@ if [[ "$dry_run" == false ]]; then
 fi
 
 printf 'using release assets from %s\n' "$asset_base_url"
-for archive_name in hybrid-command.zip hybrid-query.zip lightapi.zip signin.zip; do
+for archive_name in lightapi.zip signin.zip; do
   fetch_archive "$archive_name"
 done
 
-extract_archive hybrid-command.zip "$repo_dir/hybrid-command/service"
-extract_archive hybrid-query.zip "$repo_dir/hybrid-query/service"
 extract_archive lightapi.zip "$repo_dir/light-gateway-rust/lightapi"
 extract_archive signin.zip "$repo_dir/light-gateway-rust/signin"
 

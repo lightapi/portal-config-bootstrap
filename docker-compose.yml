@@ -118,7 +118,7 @@ services:
     restart: "no"
 
   hybrid-command:
-    image: ${PORTAL_HYBRID_COMMAND_IMAGE:-networknt/portal-hybrid-command:2.2.1}
+    image: ${PORTAL_HYBRID_COMMAND_IMAGE:?Set PORTAL_HYBRID_COMMAND_IMAGE to a packaged hybrid image}
     environment:
       NOREPLAY_EMAIL_PASSWORD: ${NOREPLAY_EMAIL_PASSWORD}
       INSTANCE_CLONE_PLAN_HMAC_KEY: ${INSTANCE_CLONE_PLAN_HMAC_KEY:-light-portal-development-only-instance-clone-hmac-key-v1}
@@ -131,7 +131,6 @@ services:
       # JAVA_TOOL_OPTIONS: '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005'
     volumes:
       - ./hybrid-command/config:/config
-      - ./hybrid-command/service:/service
       - ${PORTAL_DATA_DIR:-./data}:/data
     ports:
       - 8439:8439
@@ -147,10 +146,9 @@ services:
         condition: service_healthy
 
   hybrid-query:
-    image: ${PORTAL_HYBRID_QUERY_IMAGE:-networknt/portal-hybrid-query:2.2.1}
+    image: ${PORTAL_HYBRID_QUERY_IMAGE:?Set PORTAL_HYBRID_QUERY_IMAGE to a packaged hybrid image}
     volumes:
       - ./hybrid-query/node1:/config
-      - ./hybrid-query/service:/service
       # Pin the Gateway's Cloudflare Origin certificate; ca.pem is the unrelated Networknt dev CA.
       - ./light-gateway-rust/config/cert.pem:/run/secrets/gateway-trust.pem:ro
       - ${PORTAL_DATA_DIR:-./data}:/data
