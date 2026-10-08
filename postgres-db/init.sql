@@ -5,7 +5,7 @@ CREATE DATABASE configserver;
 -- PostgreSQL database dump
 --
 
-\restrict ZPTCXqMckzwW1CzxL9jCSb8bU7eiff3Gn3OQr0OSLkvTPZGdMoO5kIJQ5rZFJr9
+\restrict Ak48K22Rjp0uvkcWcoTpCfN7VladY8rsorgR7f4SPeThaFZhyeiOVIjK8vBW9mT
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 17.10
@@ -37284,6 +37284,217 @@ COMMENT ON COLUMN public.tool_t.script_execution_policy IS 'Script Execution Pol
 
 
 --
+-- Name: tool_workflow_access_delivery_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.tool_workflow_access_delivery_t (
+    host_id uuid NOT NULL,
+    tool_id uuid NOT NULL,
+    source_revision bigint NOT NULL,
+    payload jsonb NOT NULL,
+    acked_revision bigint DEFAULT 0 NOT NULL,
+    acked_digest text,
+    last_error text,
+    update_ts timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT tool_workflow_access_delivery_t_source_revision_check CHECK ((source_revision > 0))
+);
+
+
+--
+-- Name: TABLE tool_workflow_access_delivery_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.tool_workflow_access_delivery_t IS 'Durable current policy publication payload and conditional receipt; excluded from domain snapshots.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_delivery_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_delivery_t.host_id IS 'Tenant Host that owns the publication payload.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_delivery_t.tool_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_delivery_t.tool_id IS 'Registered Tool associated with this publication payload.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_delivery_t.source_revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_delivery_t.source_revision IS 'Exact policy publication revision carried by the payload.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_delivery_t.payload; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_delivery_t.payload IS 'Durable canonical operational policy payload; contains no caller credentials.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_delivery_t.acked_revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_delivery_t.acked_revision IS 'Publication revision acknowledged by a matching operational receipt.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_delivery_t.acked_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_delivery_t.acked_digest IS 'Canonical digest acknowledged for the exact current publication revision.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_delivery_t.last_error; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_delivery_t.last_error IS 'Last publication failure diagnostic used by explicit retry.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_delivery_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_delivery_t.update_ts IS 'Timestamp of the latest publication ledger update.';
+
+
+--
+-- Name: tool_workflow_access_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.tool_workflow_access_t (
+    host_id uuid NOT NULL,
+    tool_id uuid NOT NULL,
+    policy_id uuid NOT NULL,
+    capability_ref text NOT NULL,
+    tool_version character varying(20) NOT NULL,
+    lightapi_digest text NOT NULL,
+    allowed_environments text[] NOT NULL,
+    allowed_methods text[] NOT NULL,
+    enabled boolean DEFAULT false NOT NULL,
+    aggregate_version bigint NOT NULL,
+    publication_revision bigint DEFAULT 0 NOT NULL,
+    observed_tool_revision bigint DEFAULT 0 NOT NULL,
+    update_user text NOT NULL,
+    update_ts timestamp with time zone NOT NULL,
+    CONSTRAINT tool_workflow_access_t_aggregate_version_check CHECK ((aggregate_version > 0)),
+    CONSTRAINT tool_workflow_access_t_allowed_environments_check CHECK (((cardinality(allowed_environments) >= 1) AND (cardinality(allowed_environments) <= 16))),
+    CONSTRAINT tool_workflow_access_t_allowed_methods_check CHECK ((((cardinality(allowed_methods) >= 1) AND (cardinality(allowed_methods) <= 6)) AND (allowed_methods <@ ARRAY['GET'::text, 'HEAD'::text, 'POST'::text, 'PUT'::text, 'PATCH'::text, 'DELETE'::text]))),
+    CONSTRAINT tool_workflow_access_t_lightapi_digest_check CHECK ((lightapi_digest ~ '^sha256:[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: TABLE tool_workflow_access_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.tool_workflow_access_t IS 'Event-projected exact-pin Host Tool policy; operational authority changes only after publication.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.host_id IS 'Tenant Host that owns the reviewed policy.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.tool_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.tool_id IS 'Exact registered Tool reviewed by this policy.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.policy_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.policy_id IS 'Stable Host and Tool policy aggregate identifier.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.capability_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.capability_ref IS 'Reviewed canonical capability reference.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.tool_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.tool_version IS 'Exact reviewed Tool version; changes require renewal.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.lightapi_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.lightapi_digest IS 'Exact reviewed LightAPI document digest.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.allowed_environments; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.allowed_environments IS 'Explicit reviewed deployment environments.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.allowed_methods; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.allowed_methods IS 'Explicit reviewed registered HTTP methods.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.enabled; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.enabled IS 'Desired catalog policy flag; a pending disable is not operational revocation.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.aggregate_version IS 'Last projected policy aggregate event version.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.publication_revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.publication_revision IS 'Monotonic operational publication revision.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.observed_tool_revision; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.observed_tool_revision IS 'Tool revision observed when composing the current policy publication.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.update_user IS 'Principal responsible for the latest projected policy change.';
+
+
+--
+-- Name: COLUMN tool_workflow_access_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.tool_workflow_access_t.update_ts IS 'Timestamp of the latest projected policy change.';
+
+
+--
 -- Name: user_col_filter_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -39193,10 +39404,12 @@ CREATE TABLE public.workflow_endpoint_target_t (
     active boolean DEFAULT true NOT NULL,
     update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
     update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    resolution_document jsonb,
     CONSTRAINT workflow_endpoint_target_t_allowed_methods_check CHECK ((cardinality(allowed_methods) > 0)),
     CONSTRAINT workflow_endpoint_target_t_allowed_methods_check1 CHECK ((allowed_methods <@ ARRAY['GET'::text, 'HEAD'::text, 'POST'::text, 'PUT'::text, 'PATCH'::text, 'DELETE'::text])),
     CONSTRAINT workflow_endpoint_target_t_authorization_policy_digest_check CHECK (((authorization_policy_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text)),
-    CONSTRAINT workflow_endpoint_target_t_endpoint_uri_check CHECK ((endpoint_uri ~ '^https?://'::text))
+    CONSTRAINT workflow_endpoint_target_t_endpoint_uri_check CHECK ((endpoint_uri ~ '^https?://'::text)),
+    CONSTRAINT workflow_endpoint_target_t_resolution_document_check CHECK (((resolution_document IS NULL) OR (jsonb_typeof(resolution_document) = 'object'::text)))
 );
 
 
@@ -39268,6 +39481,13 @@ COMMENT ON COLUMN public.workflow_endpoint_target_t.update_user IS 'User or serv
 --
 
 COMMENT ON COLUMN public.workflow_endpoint_target_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: COLUMN workflow_endpoint_target_t.resolution_document; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_endpoint_target_t.resolution_document IS 'Optional exact-pin validated LightAPI resolution document retained from the accepted Tool event; no credentials.';
 
 
 --
@@ -41594,6 +41814,151 @@ COMMENT ON COLUMN public.workflow_tool_approval_evidence_t.active IS 'Indicates 
 
 
 --
+-- Name: workflow_tool_grant_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.workflow_tool_grant_t (
+    host_id uuid NOT NULL,
+    grant_id uuid NOT NULL,
+    tool_id uuid NOT NULL,
+    wf_def_id uuid NOT NULL,
+    tool_version character varying(20) NOT NULL,
+    lightapi_digest character varying(71) NOT NULL,
+    allowed_environments text[] NOT NULL,
+    aggregate_version bigint DEFAULT 1 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
+    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT workflow_tool_grant_t_aggregate_version_check CHECK ((aggregate_version > 0)),
+    CONSTRAINT workflow_tool_grant_t_allowed_environments_check CHECK ((cardinality(allowed_environments) > 0)),
+    CONSTRAINT workflow_tool_grant_t_lightapi_digest_check CHECK (((lightapi_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text))
+);
+
+
+--
+-- Name: TABLE workflow_tool_grant_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.workflow_tool_grant_t IS 'Stores workflow tool grant records used by the Light Workflow, Light Agent, and execution runtime services.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.host_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.host_id IS 'Tenant host identifier that scopes this record.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.grant_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.grant_id IS 'Identifier for the related grant.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.tool_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.tool_id IS 'Identifier for the related tool.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.wf_def_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.wf_def_id IS 'Identifier for the related wf def.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.tool_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.tool_version IS 'Version value for tool.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.lightapi_digest; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.lightapi_digest IS 'Integrity digest for lightapi.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.allowed_environments; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.allowed_environments IS 'Allowed Environments value for this workflow tool grant record.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.aggregate_version IS 'Version value for aggregate.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.active IS 'Indicates whether this record is active.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.update_user; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.update_user IS 'User or service principal that last updated this record.';
+
+
+--
+-- Name: COLUMN workflow_tool_grant_t.update_ts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.workflow_tool_grant_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: workflow_tool_authority_v; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.workflow_tool_authority_v AS
+ SELECT workflow_tool_grant_t.host_id,
+    workflow_tool_grant_t.grant_id,
+    workflow_tool_grant_t.tool_id,
+    workflow_tool_grant_t.wf_def_id,
+    workflow_tool_grant_t.tool_version,
+    workflow_tool_grant_t.lightapi_digest,
+    workflow_tool_grant_t.allowed_environments,
+    workflow_tool_grant_t.aggregate_version,
+    workflow_tool_grant_t.active,
+    workflow_tool_grant_t.update_user,
+    workflow_tool_grant_t.update_ts,
+    'SPECIFIC_GRANT'::text AS authorization_source,
+    NULL::text[] AS allowed_methods
+   FROM public.workflow_tool_grant_t
+UNION ALL
+ SELECT p.host_id,
+    p.policy_id AS grant_id,
+    p.tool_id,
+    w.wf_def_id,
+    p.tool_version,
+    p.lightapi_digest,
+    p.allowed_environments,
+    p.aggregate_version,
+    p.enabled AS active,
+    p.update_user,
+    p.update_ts,
+    'HOST_TOOL'::text AS authorization_source,
+    p.allowed_methods
+   FROM ((public.tool_workflow_access_t p
+     JOIN public.wf_definition_t w ON ((w.host_id = p.host_id)))
+     JOIN public.tool_workflow_access_delivery_t d ON (((d.host_id = p.host_id) AND (d.tool_id = p.tool_id))))
+  WHERE ((d.acked_revision = d.source_revision) AND (d.acked_digest IS NOT NULL));
+
+
+--
 -- Name: workflow_tool_binding_t; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -42040,112 +42405,6 @@ COMMENT ON COLUMN public.workflow_tool_dependency_t.update_user IS 'User or serv
 --
 
 COMMENT ON COLUMN public.workflow_tool_dependency_t.update_ts IS 'Timestamp when this record was last updated.';
-
-
---
--- Name: workflow_tool_grant_t; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.workflow_tool_grant_t (
-    host_id uuid NOT NULL,
-    grant_id uuid NOT NULL,
-    tool_id uuid NOT NULL,
-    wf_def_id uuid NOT NULL,
-    tool_version character varying(20) NOT NULL,
-    lightapi_digest character varying(71) NOT NULL,
-    allowed_environments text[] NOT NULL,
-    aggregate_version bigint DEFAULT 1 NOT NULL,
-    active boolean DEFAULT true NOT NULL,
-    update_user character varying(126) DEFAULT SESSION_USER NOT NULL,
-    update_ts timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT workflow_tool_grant_t_aggregate_version_check CHECK ((aggregate_version > 0)),
-    CONSTRAINT workflow_tool_grant_t_allowed_environments_check CHECK ((cardinality(allowed_environments) > 0)),
-    CONSTRAINT workflow_tool_grant_t_lightapi_digest_check CHECK (((lightapi_digest)::text ~ '^sha256:[0-9a-f]{64}$'::text))
-);
-
-
---
--- Name: TABLE workflow_tool_grant_t; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.workflow_tool_grant_t IS 'Stores workflow tool grant records used by the Light Workflow, Light Agent, and execution runtime services.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.host_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.host_id IS 'Tenant host identifier that scopes this record.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.grant_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.grant_id IS 'Identifier for the related grant.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.tool_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.tool_id IS 'Identifier for the related tool.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.wf_def_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.wf_def_id IS 'Identifier for the related wf def.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.tool_version; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.tool_version IS 'Version value for tool.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.lightapi_digest; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.lightapi_digest IS 'Integrity digest for lightapi.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.allowed_environments; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.allowed_environments IS 'Allowed Environments value for this workflow tool grant record.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.aggregate_version IS 'Version value for aggregate.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.active; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.active IS 'Indicates whether this record is active.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.update_user; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.update_user IS 'User or service principal that last updated this record.';
-
-
---
--- Name: COLUMN workflow_tool_grant_t.update_ts; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.workflow_tool_grant_t.update_ts IS 'Timestamp when this record was last updated.';
 
 
 --
@@ -45295,6 +45554,30 @@ ALTER TABLE ONLY public.tool_param_t
 
 ALTER TABLE ONLY public.tool_t
     ADD CONSTRAINT tool_t_pkey PRIMARY KEY (host_id, tool_id);
+
+
+--
+-- Name: tool_workflow_access_delivery_t tool_workflow_access_delivery_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tool_workflow_access_delivery_t
+    ADD CONSTRAINT tool_workflow_access_delivery_t_pkey PRIMARY KEY (host_id, tool_id);
+
+
+--
+-- Name: tool_workflow_access_t tool_workflow_access_t_host_id_policy_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tool_workflow_access_t
+    ADD CONSTRAINT tool_workflow_access_t_host_id_policy_id_key UNIQUE (host_id, policy_id);
+
+
+--
+-- Name: tool_workflow_access_t tool_workflow_access_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tool_workflow_access_t
+    ADD CONSTRAINT tool_workflow_access_t_pkey PRIMARY KEY (host_id, tool_id);
 
 
 --
@@ -51740,6 +52023,22 @@ ALTER TABLE ONLY public.tool_t
 
 
 --
+-- Name: tool_workflow_access_delivery_t tool_workflow_access_delivery_t_host_id_tool_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tool_workflow_access_delivery_t
+    ADD CONSTRAINT tool_workflow_access_delivery_t_host_id_tool_id_fkey FOREIGN KEY (host_id, tool_id) REFERENCES public.tool_workflow_access_t(host_id, tool_id);
+
+
+--
+-- Name: tool_workflow_access_t tool_workflow_access_t_host_id_tool_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tool_workflow_access_t
+    ADD CONSTRAINT tool_workflow_access_t_host_id_tool_id_fkey FOREIGN KEY (host_id, tool_id) REFERENCES public.tool_t(host_id, tool_id);
+
+
+--
 -- Name: user_col_filter_t user_col_filter_t_host_id_endpoint_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -53094,7 +53393,7 @@ END
 $install_cascade_triggers$;
 
 COMMIT;
-\unrestrict ZPTCXqMckzwW1CzxL9jCSb8bU7eiff3Gn3OQr0OSLkvTPZGdMoO5kIJQ5rZFJr9
+\unrestrict Ak48K22Rjp0uvkcWcoTpCfN7VladY8rsorgR7f4SPeThaFZhyeiOVIjK8vBW9mT
 
 
 INSERT INTO public.user_t (user_id, language, first_name, last_name, email, user_type, verified, password)
