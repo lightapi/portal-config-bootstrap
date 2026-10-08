@@ -74,7 +74,7 @@ class Fake:
         if state:
             self.serving = r.digest((self.root / state / 'release-manifest.json').read_bytes())
 
-    def read_release_digest(self):
+    def read_release_digest(self, timeout=10):
         self.calls.append(('head',))
         if self.readbacks:
             value = self.readbacks.pop(0)
@@ -83,7 +83,7 @@ class Fake:
             return value
         return self.serving
 
-    def gateway_healthy(self):
+    def gateway_healthy(self, timeout=10):
         self.calls.append(('get',))
         return self.healthy
 
@@ -682,8 +682,39 @@ class ReleaseTests(unittest.TestCase):
             with patch.dict(sys.modules, {'import_release_lib': module}):
                 spec.loader.exec_module(module)
 
+    def test_interrupted_download_or_staging_is_preserved_with_recovery_hint(self):
+        source = self.fixture()
+        for leftover in (self.root / '.downloads' / A, self.root / 'releases' / (A + '.staging')):
+            leftover.parent.mkdir(parents=True, exist_ok=True)
+            leftover.mkdir()
+            (leftover / 'unknown').write_bytes(b'operator data')
+            with self.assertRaisesRegex(r.ActivationError, 'interrupted staging run.*remove it, then retry'):
+                r.stage(source, A, self.root, self.keys)
+            self.assertEqual((leftover / 'unknown').read_bytes(), b'operator data')
+            self.assertFalse((self.root / 'releases' / A).exists())
+            (leftover / 'unknown').unlink()
+            leftover.rmdir()
+        self.assertEqual(r.stage(source, A, self.root, self.keys), self.root / 'releases' / A)
 
+    def test_readback_path_follows_canonical_mount(self):
+        for mount, path in (('/', '/'), ('/portal', '/portal/'), ('/ai/portal', '/ai/portal/')):
+            self.assertEqual(r.readback_path(mount), path)
+        for mount in ('', 'portal', '//', '/portal/', '/a//b', '/a/../b', '/./a', '/a?b', '/a#b', '/a b', None):
+            with self.assertRaisesRegex(r.ActivationError, 'invalid mount path'):
+                r.readback_path(mount)
 
+    def test_library_prepare_never_reads_back(self):
+        self.stage(A)
+        self.assertEqual(r.prepare(A, self.root, self.ctx), ('prepared', None))
+        self.assertNotIn(('head',), self.fake.calls)
+        state = r.snapshot(self.root)[1]
+        self.fake.calls.clear()
+        self.assertEqual(r.prepare(A, self.root, self.ctx), ('unchanged', A))
+        self.stage(B)
+        self.assertEqual(r.prepare(B, self.root, self.ctx), ('staged', A))
+        self.assertEqual(self.fake.calls, [('offline', A), ('offline', B)])
+        self.assertEqual(r.snapshot(self.root)[1], state)
+        self.assertEqual(r.target(self.root), 'releases/' + A)
 
 
 if __name__ == '__main__':

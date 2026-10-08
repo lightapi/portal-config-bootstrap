@@ -268,10 +268,12 @@ Verified staging precedes exact-image inspect/pull-if-absent/confirmation, offli
 validation (`--network none --pull never`) and first pointer-only preparation.
 No image acquisition is added for signed absence. Pull failure retains the
 verified candidate as staged but not prepared; pointer/state/journal stay intact.
-A different active version refuses before acquisition with explicit owner
-activation instructions. Same-version repeats keep mandatory offline validation
-and digest readback; before UI cutover, legacy readback normally refuses and
-must not be claimed as success.
+When a different version is active, the candidate is staged and validated
+offline, then preparation warns and succeeds with active/rollback state unchanged
+and prints the explicit owner activation command. Same-version repeats re-verify
+and validate offline without gateway readback; readback remains mandatory for
+activate, recreate and rollback. Leftover interrupted `.downloads/<version>` or
+`releases/<version>.staging` directories are preserved and reported for removal.
 
 The main light-gateway mounts its existing light-gateway-rust/lightapi parent
 read-only. The secondary portal-bff-sso mounts its distinct portal-bff-sso/lightapi
@@ -285,7 +287,8 @@ separate owner Portal UI/snapshot change and explicit CLI recreate.
 
 Owner lifecycle uses `python3 -B scripts/portal-view-release.py` with stage,
 activate, status, recreate, rollback and recover. Readback defaults to the primary
-https://local.localhost/ and supports an explicit HTTPS --readback-url. No sync
+https://local.localhost`<--mount-path>`/ and an explicit HTTPS --readback-url wins
+(use it when the ingress path differs from the internal mount). No sync
 mode automatically recreates, recovers, prunes or switches an active version.
 Python 3 and OpenSSL are prerequisites; existing runtime config is never replaced
 by sync. Preserve interrupted journals and recover explicitly.

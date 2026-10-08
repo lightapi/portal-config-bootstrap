@@ -1,24 +1,51 @@
-# Provenance: portal-config-loc commit 2c511911d2f2ca20448b552e9a5f96b6a10ac799
+# Base provenance: portal-config-loc commit 2c511911d2f2ca20448b552e9a5f96b6a10ac799
+# Shared readback repair follows portal-config-loc/scripts/portal_view_release.py.
 """Verified immutable releases and journalled owner-run activation (no import I/O)."""
 import contextlib
 from dataclasses import dataclass
+import errno
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import socket
+import ssl
 import stat
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
 
 class ActivationError(Exception):
     """Refused candidate or failed activation with verified restoration."""
+
+
+class TransientReadbackError(ActivationError):
+    """A classified startup/transport failure that bounded polling may retry."""
+
+
+def readback_error(error):
+    """Only known transient readback failures retry; trust/permanent failures refuse."""
+    transient = False
+    if isinstance(error, urllib.error.HTTPError):
+        transient = error.code in (502, 503, 504)
+    else:
+        cause = error.reason if isinstance(error, urllib.error.URLError) else error
+        if not isinstance(cause, ssl.SSLError):
+            transient = (isinstance(cause, (TimeoutError, ConnectionError, http.client.RemoteDisconnected))
+                         or isinstance(cause, socket.gaierror) and cause.errno == socket.EAI_AGAIN
+                         or isinstance(cause, OSError) and cause.errno in
+                         (errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED,
+                          errno.ETIMEDOUT, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EPIPE))
+    kind = TransientReadbackError if transient else ActivationError
+    return kind('gateway readback failed: ' + str(error))
 
 
 class RecoveryFailed(Exception):
@@ -42,6 +69,7 @@ class Context:
     handler_config: Path = None
     sleep: object = time.sleep
     recreate_command: str = 'docker compose --project-name all-in-lt -f all-in-lt/docker-compose.yml up -d --no-deps --force-recreate light-gateway workflow-mcp-test-gateway'
+    monotonic: object = time.monotonic
 
 
 EMPTY = dict(active=None, rollback=None, activeDigest=None)
@@ -57,6 +85,15 @@ def component(value):
             and re.fullmatch(r'[A-Za-z0-9_.-]+', value),
             'unsafe version or filename')
     return value
+
+
+def readback_path(mount_path):
+    """Canonical gateway mount (as validated by the gateway) with one trailing slash."""
+    segments = mount_path.split('/')[1:] if isinstance(mount_path, str) else []
+    require(isinstance(mount_path, str) and (mount_path == '/' or mount_path.startswith('/')
+            and all(s not in ('', '.', '..') and re.fullmatch(r"[A-Za-z0-9._~!$&'()*+,;=:@-]+", s)
+                    for s in segments)), 'invalid mount path for readback')
+    return mount_path.rstrip('/') + '/'
 
 
 def member_path(value):
@@ -243,6 +280,11 @@ def remove_owned(path):
     shutil.rmtree(path)
 
 
+def leftover(path):
+    return ('leftover ' + str(path) + ' from an interrupted staging run; it is never removed automatically. '
+            'Confirm no staging is running, inspect it, remove it, then retry')
+
+
 def stage(source, version, root, key_dir, downloader=fetch):
     version, root = component(version), Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -254,6 +296,7 @@ def stage(source, version, root, key_dir, downloader=fetch):
     staging = root / 'releases' / (version + '.staging')
     owned_download = owned_stage = False
     try:
+        require(not os.path.lexists(downloaded), leftover(downloaded))
         downloaded.mkdir()  # Never reuse/remove an unknown earlier download.
         owned_download = True
         for name in ('portal-view-' + version + '.zip', 'release-manifest.json', 'release-manifest.sig'):
@@ -274,6 +317,7 @@ def stage(source, version, root, key_dir, downloader=fetch):
             require(digest((target / 'release-manifest.json').read_bytes()) == digest((downloaded / 'release-manifest.json').read_bytes()),
                     'release ' + version + ' already staged with different content')
             return target
+        require(not os.path.lexists(staging), leftover(staging))
         staging.mkdir()
         owned_stage = True
         (staging / 'dist').mkdir()
@@ -363,13 +407,31 @@ def status(root):
                 transition=read_json(root / 'transition.json') if os.path.lexists(root / 'transition.json') else None)
 
 
-def poll(ctx, expected):
+def poll(ctx, expected, expect_legacy=False):
+    # Bound both retries and elapsed time. Adapters cap socket timeouts to the
+    # remaining budget; a late response never counts as verified success.
+    deadline = ctx.monotonic() + 60
     for attempt in range(15):
-        if ctx.runner.read_release_digest() == expected:
-            return
-        if attempt < 14:
-            ctx.sleep(2)
-    raise ActivationError('gateway release digest did not match after 15 readbacks')
+        remaining = deadline - ctx.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            healthy = True
+            if expect_legacy:
+                healthy = ctx.runner.gateway_healthy(timeout=min(10, remaining))
+                remaining = deadline - ctx.monotonic()
+                if remaining <= 0:
+                    break
+            actual = ctx.runner.read_release_digest(timeout=min(10, remaining))
+            if healthy and actual == expected and ctx.monotonic() < deadline:
+                return
+        except TransientReadbackError:
+            pass
+        remaining = deadline - ctx.monotonic()
+        if attempt < 14 and remaining > 0:
+            ctx.sleep(min(2, remaining))
+    observation = 'legacy page health and absent digest' if expect_legacy else 'gateway release digest'
+    raise ActivationError(observation + ' not verified within 60 seconds / 15 attempts')
 
 
 def candidate(root, version, ctx):
@@ -476,6 +538,22 @@ def activate(version, root, ctx, pointer_only=False):
         _activate(version, root, ctx, pointer_only)
 
 
+def prepare(version, root, ctx):
+    """Preparation never reads back serving: the first release gets the pointer only;
+    otherwise the staged candidate is verified offline and state stays unchanged."""
+    version, root = component(version), Path(root)
+    with locked(root):
+        _, state = consistent(root)
+        if state['active'] is None:
+            _activate(version, root, ctx, True)
+            return 'prepared', None
+        new_digest = candidate(root, version, ctx)
+        if version == state['active']:
+            require(new_digest == state['activeDigest'], 'active manifest digest mismatch')
+            return 'unchanged', version
+        return 'staged', state['active']
+
+
 def rollback(root, ctx):
     root = Path(root)
     with locked(root):
@@ -499,8 +577,7 @@ def recreate(root, ctx, expect_legacy=False):
         try:
             ctx.runner.recreate_gateways()
             if expect_legacy:
-                require(ctx.runner.gateway_healthy() and ctx.runner.read_release_digest() is None,
-                        'legacy page health or absent digest check failed')
+                poll(ctx, None, expect_legacy=True)
             else:
                 poll(ctx, state['activeDigest'])
         except Exception as error:

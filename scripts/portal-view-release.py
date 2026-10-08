@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Repository signed release command. Importing this module performs no effects."""
 import argparse
+import http.client
 import json
 import os
 from pathlib import Path
@@ -46,11 +47,18 @@ class RealRunner:
         published = next((port.get('published') for port in ports if isinstance(port, dict) and port.get('target') == 8443), None)
         if published is not None:
             release.require(str(published).isdigit() and 1 <= int(published) <= 65535, 'invalid gateway published port')
-        self.url = readback_url or (default.scheme + '://' + default.hostname + (':' + str(published) if published is not None else '') + '/')
+        self.readback_origin = default.scheme + '://' + default.hostname + (':' + str(published) if published is not None else '')
+        self.explicit_readback = readback_url is not None
+        self.url = readback_url or self.readback_origin + '/'
         parsed = urllib.parse.urlsplit(self.url)
         release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username
                         and not parsed.password and not parsed.fragment, 'readback URL must be HTTPS without credentials or fragment')
         self.opener = None
+
+    def use_mount_path(self, mount_path):
+        """Default readback targets the SPA mount; an explicit --readback-url wins."""
+        if not self.explicit_readback:
+            self.url = self.readback_origin + release.readback_path(mount_path)
 
     def run(self, args, check=True, timeout=180):
         result = self.execute(args, cwd=BASE, env=self.env, capture_output=True, text=True, timeout=timeout)
@@ -107,20 +115,23 @@ class RealRunner:
             self.opener = self.opener_factory(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context), NoRedirect())
         return self.opener
 
-    def read_release_digest(self):
+    def read_release_digest(self, timeout=10):
         try:
-            with self.trust().open(urllib.request.Request(self.url, method='HEAD'), timeout=10) as response:
-                release.require(response.status == 200, 'HEAD readback did not return HTTP 200')
+            with self.trust().open(urllib.request.Request(self.url, method='HEAD'), timeout=timeout) as response:
+                if response.status != 200:
+                    raise urllib.error.HTTPError(self.url, response.status, 'HEAD readback did not return HTTP 200', {}, None)
                 return response.headers.get('X-Portal-Release-Digest')
-        except OSError as error:
-            raise release.ActivationError('HEAD release readback failed') from error
+        except (OSError, http.client.HTTPException) as error:
+            raise release.readback_error(error) from error
 
-    def gateway_healthy(self):
+    def gateway_healthy(self, timeout=10):
         try:
-            with self.trust().open(urllib.request.Request(self.url, method='GET'), timeout=10) as response:
-                return response.status == 200
-        except OSError:
-            return False
+            with self.trust().open(urllib.request.Request(self.url, method='GET'), timeout=timeout) as response:
+                if response.status != 200:
+                    raise urllib.error.HTTPError(self.url, response.status, 'GET readback did not return HTTP 200', {}, None)
+                return True
+        except (OSError, http.client.HTTPException) as error:
+            raise release.readback_error(error) from error
 
 
 def local_env_value(path, name):
@@ -222,9 +233,7 @@ def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None
         return
     ROOT.mkdir(parents=True, exist_ok=True)
     with release.locked(ROOT):
-        _, state = release.consistent(ROOT)
-        release.require(state['active'] in (None, version),
-                        'different release already active; stage separately and run python3 -B scripts/portal-view-release.py activate --version ' + version + ' explicitly')
+        release.consistent(ROOT)  # Refuse a retained journal before any download.
     def download(url, destination):
         with transport.open(url, timeout=60) as response, destination.open('xb') as output:
             release.require(response.status == 200, 'signed release member download failed')
@@ -239,8 +248,15 @@ def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None
     ctx = release.Context(release.Runner(real.validate_offline, real.recreate_gateways, real.read_release_digest, real.gateway_healthy),
                           CONFIG / 'portal-config.json', CONFIG / 'portal-view-release-keys')
     ctx.recreate_command = real.recreate_command
-    release.activate(version, ROOT, ctx, pointer_only=True)
-    print('PORTAL_VIEW_RELEASE: prepared ' + version + '; serving cutover remains an owner action')
+    outcome, active = release.prepare(version, ROOT, ctx)
+    if outcome == 'prepared':
+        print('PORTAL_VIEW_RELEASE: prepared ' + version + '; serving cutover remains an owner action')
+    elif outcome == 'unchanged':
+        print('PORTAL_VIEW_RELEASE: ' + version + ' already prepared; verified offline, serving not read back')
+    else:
+        print('PORTAL_VIEW_RELEASE: WARNING: verified and staged ' + version + ' while ' + active
+              + ' remains active; active/rollback state unchanged. Activate explicitly: '
+              'python3 -B scripts/portal-view-release.py activate --version ' + version, file=sys.stderr)
 
 
 def installer_config():
@@ -335,6 +351,8 @@ def main(argv=None, runner_factory=RealRunner):
             if args.command == 'activate':
                 release.component(args.version)
             real = runner_factory(args.readback_url)
+            if hasattr(real, 'use_mount_path'):
+                real.use_mount_path(args.mount_path)
             runner = release.Runner(real.validate_offline, real.recreate_gateways, real.read_release_digest, real.gateway_healthy)
             ctx = release.Context(runner, CONFIG / 'portal-config.json', CONFIG / 'portal-view-release-keys', args.mount_path, args.handler_config)
             if hasattr(real, 'recreate_command'):

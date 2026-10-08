@@ -155,32 +155,54 @@ class AdapterTests(unittest.TestCase):
         self.factory.assert_not_called()
         self.assertFalse((self.root / 'current').exists())
 
-    def test_same_version_pre_cutover_refusal_and_post_cutover_readback(self):
+    def test_same_version_repeat_verifies_offline_without_readback(self):
         self.serve()
         self.prepare()
         state = (self.root / 'state.json').read_bytes()
         inode = (self.root / 'state.json').stat().st_ino
-        self.fake.calls.clear()
-        with self.assertRaisesRegex(r.ActivationError, 'not serving'):
+        for serving in (None, r.TransientReadbackError('connection refused')):
+            # Legacy serving before cutover, or a stopped gateway: neither is read back.
+            self.fake.calls.clear()
+            self.fake.readbacks = [serving]
             self.prepare()
-        self.assertEqual(self.fake.calls, [('offline', portable.A), ('head',)])
+            self.assertEqual(self.fake.calls, [('offline', portable.A)])
+            self.assertEqual((self.root / 'state.json').read_bytes(), state)
+            self.assertEqual((self.root / 'state.json').stat().st_ino, inode)
+            self.assertEqual(r.target(self.root), 'releases/' + portable.A)
+        self.fake.offline_error = True
+        with self.assertRaisesRegex(r.ActivationError, 'offline validation rejected'):
+            self.prepare()
         self.assertEqual((self.root / 'state.json').read_bytes(), state)
-        self.assertEqual((self.root / 'state.json').stat().st_ino, inode)
-        self.fake.serving = r.snapshot(self.root)[1]['activeDigest']
-        self.prepare()
-        self.assertEqual((self.root / 'state.json').stat().st_ino, inode)
-        self.assertNotIn(('recreate',), self.fake.calls)
 
-    def test_different_active_version_refused_before_acquisition_or_stage(self):
+    def test_different_active_version_stages_validates_warns_and_keeps_state(self):
         self.serve()
         self.prepare()
         self.serve(portable.B)
-        before = snapshot(self.root)
-        self.factory.reset_mock()
-        with self.assertRaisesRegex(r.ActivationError, 'activate --version ' + portable.B):
+        state = (self.root / 'state.json').read_bytes()
+        self.fake.calls.clear()
+        self.fake.ensure_image.reset_mock()
+        warning = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(warning):
+            cli.prepare('2.6.0', 'https://cdn.example/releases', self.factory, self.transport)
+        self.assertEqual(self.fake.calls, [('offline', portable.B)])
+        self.fake.ensure_image.assert_called_once()
+        self.assertTrue((self.root / 'releases' / portable.B / 'dist').is_dir())
+        self.assertEqual((self.root / 'state.json').read_bytes(), state)
+        self.assertEqual(r.target(self.root), 'releases/' + portable.A)
+        self.assertFalse((self.root / 'transition.json').exists())
+        self.assertIn('WARNING', warning.getvalue())
+        self.assertIn('activate --version ' + portable.B, warning.getvalue())
+
+    def test_different_active_version_invalid_candidate_refuses_without_state_change(self):
+        self.serve()
+        self.prepare()
+        self.serve(portable.B)
+        state = (self.root / 'state.json').read_bytes()
+        self.fake.offline_error = True
+        with self.assertRaisesRegex(r.ActivationError, 'offline validation rejected'):
             self.prepare()
-        self.factory.assert_not_called()
-        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual((self.root / 'state.json').read_bytes(), state)
+        self.assertEqual(r.target(self.root), 'releases/' + portable.A)
 
     def test_image_acquisition_failure_retains_staged_but_unprepared_candidate(self):
         self.serve()
