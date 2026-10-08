@@ -6,7 +6,7 @@ services:
     volumes:
       - ./portal-bff-sso/config:/config:ro
       - ./portal-bff-sso/tls:/tls:ro
-      - ./portal-bff-sso/lightapi/dist:/lightapi/dist:ro
+      - ./portal-bff-sso/lightapi:/lightapi:ro,Z
       - ./light-controller-rust/ca.pem:/config-server-ca/ca.pem:ro
       - ./postgres-db/secrets/gateway-database-url:/run/secrets/gateway-database-url:ro
       - portal-bff-sso-config-cache:/app/config-cache

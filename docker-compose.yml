@@ -459,7 +459,7 @@ services:
       - 443:8443
     volumes:
       - ./light-gateway-rust/config:/config
-      - ./light-gateway-rust/lightapi/dist:/lightapi/dist
+      - ./light-gateway-rust/lightapi:/lightapi:ro,Z
       - ./light-gateway-rust/signin/dist:/signin/dist
       - gateway-runtime-secrets:/run/secrets:ro
     environment:
