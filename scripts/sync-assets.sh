@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/sync-assets.sh [--dry-run]
+Usage: scripts/sync-assets.sh [--dry-run] [--stage-signed]
 
 Download the current runtime asset archives from the CDN and sync them into
 the Bootstrap baseline services.
@@ -14,6 +14,7 @@ Synced assets:
 
 Options:
   -n, --dry-run  Show what would be downloaded and replaced.
+  --stage-signed Verify/stage signed UI and prepare first pointer; never cut over.
   -h, --help     Show this help.
 
 Environment overrides:
@@ -29,6 +30,7 @@ die() {
 }
 
 dry_run=false
+stage_signed=false
 while (($#)); do
   case "$1" in
     -n|--dry-run)
@@ -37,6 +39,9 @@ while (($#)); do
     -h|--help)
       usage
       exit 0
+      ;;
+    --stage-signed)
+      stage_signed=true
       ;;
     *)
       die "unknown option: $1"
@@ -95,6 +100,12 @@ extract_archive() {
     return
   fi
 
+  if [[ "$archive_name" == "lightapi.zip" ]]; then
+    python3 -B "$script_dir/portal-view-release.py" legacy-dist --archive "$archive_path" --root "$target_dir"
+    printf 'synced %s legacy dist to %s\n' "$archive_name" "$target_dir"
+    return
+  fi
+
   rm -rf "$staged_dir"
   active_staged_dir="$staged_dir"
   mkdir -p "$staged_dir"
@@ -111,6 +122,7 @@ extract_archive() {
 if [[ "$dry_run" == false ]]; then
   command -v curl >/dev/null 2>&1 || die "curl is required"
   command -v unzip >/dev/null 2>&1 || die "unzip is required"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required"
 fi
 
 printf 'using release assets from %s\n' "$asset_base_url"
@@ -120,6 +132,15 @@ done
 
 extract_archive lightapi.zip "$repo_dir/light-gateway-rust/lightapi"
 extract_archive signin.zip "$repo_dir/light-gateway-rust/signin"
+
+if [[ "$stage_signed" == true ]]; then
+  if [[ "$dry_run" == true ]]; then
+    printf 'would stage signed portal-view for enclosing release %s (no operations)\n' "${LIGHT_PORTAL_VERSION:-<required>}"
+  else
+    [[ -n "${LIGHT_PORTAL_VERSION:-}" ]] || die "--stage-signed requires LIGHT_PORTAL_VERSION (enclosing release)"
+    python3 -B "$script_dir/portal-view-release.py" prepare --enclosing-version "$LIGHT_PORTAL_VERSION"
+  fi
+fi
 
 if [[ "$dry_run" == true ]]; then
   printf 'dry run complete; no files changed\n'

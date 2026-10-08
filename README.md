@@ -230,3 +230,62 @@ Asset synchronization retains UI assets and does not download hybrid ZIPs.
 For direct Compose use, pass the selected environment file with `--env-file`.
 Use the existing deployment entry point for the complete environment and startup
 ordering; updating source files does not restart already-created containers.
+## Optional signed Portal View preparation
+
+Ordinary `scripts/sync-assets.sh` remains legacy-only. The owner-approved WP12
+correction retains legacy payload/download selection but removes parent deletion:
+extract and validate in an owned temporary directory, then replace only
+`light-gateway-rust/lightapi/dist`. Signed releases, current, state, transition
+journal, lock and unrelated parent contents survive both modes. Failures preserve
+existing dist. Neither legacy nor signed extracted members are rewritten.
+
+No authentication mode is selected for the operator. Review and customize one
+of `light-gateway-rust/config/portal-config.oauth2.example.json` or
+`portal-config.entra-sso.example.json`, then provision the chosen configuration
+as `portal-config.json`. The Entra example deliberately contains nil tenant and
+client UUIDs and fails browser/gateway validation until real registered values
+are supplied. The OAuth example also requires the operator's registered URL and
+client. Provision independently trusted **public** Ed25519 keys under
+`light-gateway-rust/config/portal-view-release-keys/<keyId>.pem`. Placeholders only
+ship; never download a trust anchor with its release.
+
+```sh
+LIGHT_PORTAL_VERSION='<enclosing-release>' scripts/sync-assets.sh --stage-signed
+```
+
+This opt-in uses the supported bootstrap Compose pair `docker-compose.yml` and
+`docker-compose.bootstrap.yml`, docker-images.env, LIGHT_PORTAL_ENV_FILE,
+BOOTSTRAP_ENV_FILE (default .env.bootstrap), and that file's COMPOSE_PROJECT_NAME
+(default light-portal-bootstrap). Complete the existing bootstrap env setup
+first. The primary light-gateway image is selected from effective Compose JSON.
+Enclosing version selects the release prefix; the data-only env file's separate
+PORTAL_VIEW_VERSION selects the signed archive/destination. The base defaults to
+`<LIGHT_PORTAL_ASSET_BASE_URL>/light-portal/releases`, with optional
+LIGHT_PORTAL_RELEASE_BASE_URL override. Only metadata HTTP 404 means unpublished
+legacy fallback; other download/metadata/verification errors stop.
+
+Verified staging precedes exact-image inspect/pull-if-absent/confirmation, offline
+validation (`--network none --pull never`) and first pointer-only preparation.
+No image acquisition is added for signed absence. Pull failure retains the
+verified candidate as staged but not prepared; pointer/state/journal stay intact.
+A different active version refuses before acquisition with explicit owner
+activation instructions. Same-version repeats keep mandatory offline validation
+and digest readback; before UI cutover, legacy readback normally refuses and
+must not be claimed as success.
+
+The main light-gateway mounts its existing light-gateway-rust/lightapi parent
+read-only. The secondary portal-bff-sso mounts its distinct portal-bff-sso/lightapi
+parent read-only; this sync command does not populate that separate parent or
+configure its authentication. Both changes preserve existing /config mounts.
+Compose editing does not update running containers. The owner explicitly
+recreates affected services to adopt mounts; the primary CLI's
+`recreate --expect-legacy` adopts its mount without serving cutover. Secondary
+BFF lifecycle remains its existing owner procedure. Primary first cutover is a
+separate owner Portal UI/snapshot change and explicit CLI recreate.
+
+Owner lifecycle uses `python3 -B scripts/portal-view-release.py` with stage,
+activate, status, recreate, rollback and recover. Readback defaults to the primary
+https://local.localhost/ and supports an explicit HTTPS --readback-url. No sync
+mode automatically recreates, recovers, prunes or switches an active version.
+Python 3 and OpenSSL are prerequisites; existing runtime config is never replaced
+by sync. Preserve interrupted journals and recover explicitly.
