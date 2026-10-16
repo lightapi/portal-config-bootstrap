@@ -25,3 +25,26 @@ host configuration are retained. Then make these scoped changes:
 The committed YAML files are reviewable source material. Runtime secrets stay
 in `.env.bootstrap` or the enterprise secret manager and must not be placed in
 Config Server events or committed to Git.
+
+## Packaged signed SPA serving
+
+Prepare the SSO package with `scripts/portal-view-release.py --service
+portal-bff-sso prepare` from the deployment root. Configure its runtime JSON and
+independently trusted public release keys under `portal-bff-sso/config` first.
+In the full virtual-host configuration for the customer domain, preserve the API
+routing and set the SPA host's `base` to `/lightapi/current/dist` with:
+
+```yaml
+spa:
+  enabled: true
+  index: index.html
+  runtimeConfig: /config/portal-config.json
+  releaseManifest: /lightapi/current/release-manifest.json
+  releaseKeyDir: /config/portal-view-release-keys
+  basePlaceholder: __PORTAL_BASE_HREF__
+```
+
+Publish this as an explicit snapshot cutover, then run
+`python3 -B scripts/portal-view-release.py --service portal-bff-sso recreate`.
+Retain the previous snapshot for first-cutover rollback. Download/preparation
+alone does not change the serving snapshot or recreate the service.

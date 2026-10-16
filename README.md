@@ -55,7 +55,7 @@ identities. The SSO BFF has its own:
 - token-exchange confidential client;
 - customer TLS certificate and host routing;
 - config-cache volume; and
-- Portal View artifact built with `VITE_SSO_ENABLED=true`.
+- Shared signed Portal View package configured for Entra SSO at runtime.
 
 This prevents redirect URIs, cookies, handlers, and client credentials from
 being switched globally when testing OAuth and SSO side by side.
@@ -63,8 +63,7 @@ being switched globally when testing OAuth and SSO side by side.
 ## Prerequisites
 
 - Docker Engine with Compose v2
-- `openssl`, Node.js, and npm
-- sibling `portal-view` checkout (or set `PORTAL_VIEW_DIR`)
+- `openssl`, Python 3, `curl`, and `unzip`
 - Microsoft Entra SPA registration with the exact redirect URI
 - Light OAuth client authorized for token exchange
 - Portal bootstrap token scoped to the SSO BFF Config Server identity
@@ -80,14 +79,25 @@ being switched globally when testing OAuth and SSO side by side.
 
    Replace every `replace-*` value. Do not commit this file.
 
-2. Build the customer-specific SSO Portal View:
+2. Configure and prepare the packaged SSO Portal View:
 
    ```bash
-   ./scripts/build-portal-view-sso.sh
+   cp portal-bff-sso/config/portal-config.entra-sso.example.json portal-bff-sso/config/portal-config.json
    ```
 
-   `VITE_SSO_ENABLED`, tenant ID, client ID, and redirect URI are Vite
-   build-time inputs. Changing them requires rebuilding the SPA.
+   Edit `portal-config.json` with the registered Entra tenant/client UUIDs and
+   redirect/logout URLs. Keep tenant/client values consistent with `.env.bootstrap`.
+   Provision approved public release keys in
+   `portal-bff-sso/config/portal-view-release-keys/<keyId>.pem`, then run:
+
+   ```bash
+   python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
+   ```
+
+   This downloads and verifies the shared package and validates the exact SSO
+   image offline. No customer-specific build is needed. On a fresh setup, publish the signed
+   SPA snapshot settings described below **before first use**: preparation does
+   not populate the legacy `portal-bff-sso/lightapi/dist` directory.
 
 3. Install enterprise TLS files as `portal-bff-sso/tls/ca.pem`, `cert.pem`, and
    `key.pem`. For single-user VM testing only, generate a self-signed set:
@@ -230,65 +240,104 @@ Asset synchronization retains UI assets and does not download hybrid ZIPs.
 For direct Compose use, pass the selected environment file with `--env-file`.
 Use the existing deployment entry point for the complete environment and startup
 ordering; updating source files does not restart already-created containers.
-## Optional signed Portal View preparation
+## Signed Portal View packages
 
-Ordinary `scripts/sync-assets.sh` remains legacy-only. The owner-approved WP12
-correction retains legacy payload/download selection but removes parent deletion:
-extract and validate in an owned temporary directory, then replace only
-`light-gateway-rust/lightapi/dist`. Signed releases, current, state, transition
-journal, lock and unrelated parent contents survive both modes. Failures preserve
-existing dist. Neither legacy nor signed extracted members are rewritten.
+Portal View is built once by the release publisher. Deployment configuration lives
+in `config/portal-config.json`; changing customer authentication or URLs does not
+require Node.js, npm, a Portal View checkout, or rebuilding the SPA.
 
-No authentication mode is selected for the operator. Review and customize one
-of `light-gateway-rust/config/portal-config.oauth2.example.json` or
-`portal-config.entra-sso.example.json`, then provision the chosen configuration
-as `portal-config.json`. The Entra example deliberately contains nil tenant and
-client UUIDs and fails browser/gateway validation until real registered values
-are supplied. The OAuth example also requires the operator's registered URL and
-client. Provision independently trusted **public** Ed25519 keys under
-`light-gateway-rust/config/portal-view-release-keys/<keyId>.pem`. Placeholders only
-ship; never download a trust anchor with its release.
+The default selection is `latest`. Preparation reads
+`https://cdn.networknt.com/light-portal/releases/latest/portal-view/release-pointer.env`
+once and resolves a versioned release directory. It then verifies the signed
+archive using independently provisioned public Ed25519 keys. The local release
+state records the artifact version and manifest digest. A moving CDN pointer never
+changes an already running service.
+
+Set `LIGHT_PORTAL_VERSION=<enclosing-release>` to pin a release. Override
+`LIGHT_PORTAL_RELEASE_BASE_URL` only for another CDN/release root; daily releases
+require no repository URL edits. Metadata, pointer, signature, configuration and
+image-validation errors (including HTTP 404) stop preparation. Do not obtain
+trust keys from the same download location as the package.
+
+Provision public keys at
+`light-gateway-rust/config/portal-view-release-keys/<keyId>.pem` and customize
+`light-gateway-rust/config/portal-config.json` before preparation. Dev ships an
+OAuth configuration; bootstrap includes OAuth and Entra example JSON files.
+Existing configuration bytes are preserved.
 
 ```sh
-LIGHT_PORTAL_VERSION='<enclosing-release>' scripts/sync-assets.sh --stage-signed
+./scripts/sync-assets.sh
+# Optional reproducible selection:
+LIGHT_PORTAL_VERSION='<enclosing-release>' ./scripts/sync-assets.sh
+# Deliberate legacy compatibility only:
+./scripts/sync-assets.sh --legacy-only
 ```
 
-This opt-in uses the supported bootstrap Compose pair `docker-compose.yml` and
-`docker-compose.bootstrap.yml`, docker-images.env, LIGHT_PORTAL_ENV_FILE,
-BOOTSTRAP_ENV_FILE (default .env.bootstrap), and that file's COMPOSE_PROJECT_NAME
-(default light-portal-bootstrap). Complete the existing bootstrap env setup
-first. The primary light-gateway image is selected from effective Compose JSON.
-Enclosing version selects the release prefix; the data-only env file's separate
-PORTAL_VIEW_VERSION selects the signed archive/destination. The base defaults to
-`<LIGHT_PORTAL_ASSET_BASE_URL>/light-portal/releases`, with optional
-LIGHT_PORTAL_RELEASE_BASE_URL override. Only metadata HTTP 404 means unpublished
-legacy fallback; other download/metadata/verification errors stop.
+Normal sync retains the legacy UI/sign-in assets and prepares the signed Portal
+View package by default (`--stage-signed` remains a compatible explicit spelling).
+Legacy refresh replaces only `lightapi/dist`; signed releases, current, state,
+transition journal, lock, and unrelated parent contents are preserved.
 
-Verified staging precedes exact-image inspect/pull-if-absent/confirmation, offline
-validation (`--network none --pull never`) and first pointer-only preparation.
-No image acquisition is added for signed absence. Pull failure retains the
-verified candidate as staged but not prepared; pointer/state/journal stay intact.
-When a different version is active, the candidate is staged and validated
-offline, then preparation warns and succeeds with active/rollback state unchanged
-and prints the explicit owner activation command. Same-version repeats re-verify
-and validate offline without gateway readback; readback remains mandatory for
-activate, recreate and rollback. Leftover interrupted `.downloads/<version>` or
-`releases/<version>.staging` directories are preserved and reported for removal.
+Preparation inspects the exact effective Compose gateway image, pulls it only if
+absent, and validates offline with `--network none --pull never`. It may therefore
+download an image. Failed acquisition leaves a verified staged candidate and
+preserves current/state/journal. First preparation sets the signed pointer only;
+a subsequent candidate is staged and validated while the active version stays
+unchanged. The command prints the explicit activation command. Repeats validate
+offline without serving readback. Interrupted staging directories/journals are
+preserved for explicit owner recovery.
 
-The main light-gateway mounts its existing light-gateway-rust/lightapi parent
-read-only. The secondary portal-bff-sso mounts its distinct portal-bff-sso/lightapi
-parent read-only; this sync command does not populate that separate parent or
-configure its authentication. Both changes preserve existing /config mounts.
-Compose editing does not update running containers. The owner explicitly
-recreates affected services to adopt mounts; the primary CLI's
-`recreate --expect-legacy` adopts its mount without serving cutover. Secondary
-BFF lifecycle remains its existing owner procedure. Primary first cutover is a
-separate owner Portal UI/snapshot change and explicit CLI recreate.
+Serving cutover remains an explicit Portal UI/Config Server snapshot action:
+set the Portal virtual-host base to `/lightapi/current/dist` and enable its `spa`
+configuration with `runtimeConfig: /config/portal-config.json`,
+`releaseManifest: /lightapi/current/release-manifest.json`,
+`releaseKeyDir: /config/portal-view-release-keys`, `index: index.html`, and
+`basePlaceholder: __PORTAL_BASE_HREF__`. Publish the snapshot before explicit
+recreation. Preserve the previous snapshot for first-cutover rollback.
 
-Owner lifecycle uses `python3 -B scripts/portal-view-release.py` with stage,
-activate, status, recreate, rollback and recover. Readback defaults to the primary
-https://local.localhost`<--mount-path>`/ and an explicit HTTPS --readback-url wins
-(use it when the ingress path differs from the internal mount). No sync
-mode automatically recreates, recovers, prunes or switches an active version.
-Python 3 and OpenSSL are prerequisites; existing runtime config is never replaced
-by sync. Preserve interrupted journals and recover explicitly.
+```sh
+python3 -B scripts/portal-view-release.py status
+python3 -B scripts/portal-view-release.py recreate --expect-legacy
+# After the explicit snapshot cutover:
+python3 -B scripts/portal-view-release.py recreate
+# Subsequent upgrades, after preparation:
+python3 -B scripts/portal-view-release.py activate --version '<artifact-version>'
+python3 -B scripts/portal-view-release.py rollback
+python3 -B scripts/portal-view-release.py recover
+```
+
+Lifecycle commands require serving digest readback; use `--readback-url` on
+activate/recreate/rollback/recover if external ingress differs from the default.
+No asset sync automatically recreates containers, cuts over serving, switches an
+active version, recovers, or prunes releases. Python 3 and OpenSSL are required.
+
+### Enterprise SSO service
+
+The SSO service has independent assets/state under `portal-bff-sso/lightapi`,
+runtime configuration under `portal-bff-sso/config/portal-config.json`, and trust
+keys under `portal-bff-sso/config/portal-view-release-keys`. Normal primary-gateway
+sync does not alter this separate service. Prepare/update it explicitly:
+
+```sh
+python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
+python3 -B scripts/portal-view-release.py --service portal-bff-sso status
+# After publishing the signed SPA settings in the customer's SSO snapshot:
+python3 -B scripts/portal-view-release.py --service portal-bff-sso recreate
+# Subsequent explicitly approved update:
+python3 -B scripts/portal-view-release.py --service portal-bff-sso activate --version '<artifact-version>'
+```
+
+The same selector supports stage, rollback, and recover. It validates/recreates
+only `portal-bff-sso`, using its effective image and published port. Default
+readback uses `CUSTOMER_PORTAL_HOST` from the environment/bootstrap dotenv file.
+Use an explicit `--readback-url` if ingress differs. The old
+`scripts/build-portal-view-sso.sh` command is a compatibility wrapper for SSO
+package preparation; it no longer builds source or reads Vite variables.
+
+### Rollout prerequisites
+
+Hold consumer merges/releases until the approved Portal View public key is
+committed in the deployment trust directories and the first complete versioned
+release plus latest pointer is published and verified. The enrolled public key is `portal-view-release-2026-10.pem`; the private
+key stays in the publisher checkout. First publication is still pending. Coordinate key enrollment and
+publication with the release owner; never obtain the trust anchor from the CDN.

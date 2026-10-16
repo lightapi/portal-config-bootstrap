@@ -43,3 +43,4 @@ CLAUDE.md
 *.bak
 *.bak-*
 db/patches/*.sql
+__pycache__/

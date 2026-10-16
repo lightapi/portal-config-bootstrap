@@ -128,7 +128,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_absent_signed_release_has_no_pointer_runner_or_pull(self):
         self.transport.open.side_effect = urllib.error.HTTPError('https://example', 404, 'absent', {}, None)
-        self.prepare()
+        with self.assertRaisesRegex(r.ActivationError, 'not published'):
+            self.prepare()
         self.factory.assert_not_called()
         self.assertFalse((self.root / 'current').exists())
         self.fake.ensure_image.assert_not_called()
@@ -392,6 +393,80 @@ class AdapterTests(unittest.TestCase):
             self.assertIn('./portal-bff-sso/lightapi:/lightapi:ro,Z', data['services']['portal-bff-sso']['volumes'])
 
 
+    def test_latest_resolves_once_and_downloads_only_pinned_payloads(self):
+        folder = self.serve()
+        urls = []
+        def fetch(url, timeout):
+            urls.append(url)
+            if url.endswith('/latest/portal-view/release-pointer.env'):
+                return response(b'LIGHT_PORTAL_VERSION=2.6.0\n')
+            self.assertIn('/2.6.0/portal-view/', url)
+            if url.endswith('portal-view-release.env'):
+                return response(('PORTAL_VIEW_VERSION=' + portable.A + '\n').encode())
+            return response((folder / url.rsplit('/', 1)[1]).read_bytes())
+        self.transport.open.side_effect = fetch
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.prepare('latest', 'https://cdn.example/releases', self.factory, self.transport)
+        self.assertEqual(sum('/latest/' in u for u in urls), 1)
+        self.assertEqual(r.target(self.root), 'releases/' + portable.A)
+
+    def test_sso_upgrade_warning_preserves_service_selector(self):
+        self.serve()
+        self.prepare()
+        self.serve(portable.B)
+        warning = io.StringIO()
+        with patch.object(cli, 'SERVICE', 'portal-bff-sso'), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(warning):
+            cli.prepare('2.6.0', 'https://cdn.example/releases', self.factory, self.transport)
+        self.assertIn('--service portal-bff-sso activate --version ' + portable.B, warning.getvalue())
+        self.assertEqual(r.target(self.root), 'releases/' + portable.A)
+
+    def test_sso_uses_independent_state_image_port_ca_and_recreation(self):
+        env_file = self.base / '.env.bootstrap'
+        env_file.write_text('CUSTOMER_PORTAL_HOST=sso.example.test\nCOMPOSE_PROJECT_NAME=fixture-project\n')
+        config = {'services': {
+            'light-gateway': {'image': 'primary:unused'},
+            'portal-bff-sso': {'image': 'sso:exact', 'ports': [{'target': 8443, 'published': '9445'}]}}}
+        execute = Mock(return_value=subprocess.CompletedProcess([], 0, json.dumps(config), ''))
+        with patch.object(cli, 'SERVICE', 'light-gateway'), patch.object(cli, 'DEFAULT_READBACK', cli.DEFAULT_READBACK), patch.dict(os.environ, {'BOOTSTRAP_ENV_FILE': str(env_file)}, clear=True):
+            cli.select_sso()
+            self.assertEqual(cli.ROOT, self.base / 'portal-bff-sso/lightapi')
+            self.assertEqual(cli.CONFIG, self.base / 'portal-bff-sso/config')
+            runner = cli.RealRunner(execute=execute)
+            self.assertEqual(runner.image, 'sso:exact')
+            self.assertEqual(runner.url, 'https://sso.example.test:9445/')
+            runner.recreate_gateways()
+            self.assertEqual(execute.call_args.args[0][-1], 'portal-bff-sso')
+            ca = self.base / 'portal-bff-sso/tls/ca.pem'
+            ca.parent.mkdir(parents=True)
+            ca.write_text('fixture CA')
+            with patch.object(cli.ssl, 'create_default_context', return_value=Mock()) as context:
+                runner.opener_factory = Mock()
+                runner.trust()
+                context.assert_called_once_with(cafile=str(ca))
+            self.assertIn('portal-bff-sso', runner.recreate_command)
+
+    def test_missing_latest_pointer_refuses_before_payload_or_image(self):
+        self.transport.open.side_effect = urllib.error.HTTPError('https://example', 404, 'missing pointer', {}, None)
+        with self.assertRaisesRegex(r.ActivationError, 'not published'):
+            cli.prepare('latest', 'https://cdn.example/releases', self.factory, self.transport)
+        self.factory.assert_not_called()
+        self.assertEqual(self.transport.open.call_count, 1)
+        self.assertFalse((self.root / 'current').exists())
+
+    def test_stage_latest_requires_pinning_before_manual_artifact_selection(self):
+        with self.assertRaisesRegex(r.ActivationError, 'stage requires a pinned'):
+            cli.source_for(types.SimpleNamespace(from_dir=None), {'LIGHT_PORTAL_VERSION': 'latest'})
+
+    def test_invalid_latest_pointer_refuses_before_payload_or_image(self):
+        for data in (b'', b'LIGHT_PORTAL_VERSION=latest\n', b'LIGHT_PORTAL_VERSION=../x\n',
+                     b'LIGHT_PORTAL_VERSION=x\nBAD=1\n', b'\xff', b'x' * 4097):
+            self.transport.open.return_value = response(data)
+            with self.assertRaises(r.ActivationError):
+                cli.resolve_source('https://cdn.example/releases', 'latest', self.transport)
+        self.factory.assert_not_called()
+
+
+
 class ShellDispatchTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='wp12-shell-')
@@ -457,8 +532,19 @@ class ShellDispatchTests(unittest.TestCase):
                 self.assertEqual((self.root / 'dist/index.html').read_bytes(), b'legacy user_type=C')
                 calls = self.log.read_text()
                 self.assertNotIn('UNEXPECTED', calls)
-                self.assertEqual(' prepare ' in calls, signed or cli.MODE == 'installer')
+                self.assertIn(' prepare ', calls)
                 self.log.unlink()
+
+    def test_default_latest_and_explicit_legacy_mode(self):
+        self.env.pop('LIGHT_PORTAL_VERSION', None)
+        result = self.run_shell()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--enclosing-version latest', self.log.read_text())
+        self.log.unlink()
+        result = ORIGINAL_RUN(['bash', str(self.checkout / 'scripts/sync-assets.sh'), '--legacy-only'], cwd=self.checkout, env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(' prepare ', self.log.read_text())
+        self.assertNotIn('UNEXPECTED', self.log.read_text())
 
     def test_failed_download_and_invalid_extraction_preserve_all_contents(self):
         before = snapshot(self.root)

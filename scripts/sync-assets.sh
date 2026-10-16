@@ -14,7 +14,8 @@ Synced assets:
 
 Options:
   -n, --dry-run  Show what would be downloaded and replaced.
-  --stage-signed Verify/stage signed UI and prepare first pointer; never cut over.
+  --stage-signed Verify/stage signed UI (default); never cut over.
+  --legacy-only  Explicit compatibility mode; skip signed preparation.
   -h, --help     Show this help.
 
 Environment overrides:
@@ -30,7 +31,7 @@ die() {
 }
 
 dry_run=false
-stage_signed=false
+stage_signed=true
 while (($#)); do
   case "$1" in
     -n|--dry-run)
@@ -39,6 +40,9 @@ while (($#)); do
     -h|--help)
       usage
       exit 0
+      ;;
+    --legacy-only)
+      stage_signed=false
       ;;
     --stage-signed)
       stage_signed=true
@@ -135,10 +139,9 @@ extract_archive signin.zip "$repo_dir/light-gateway-rust/signin"
 
 if [[ "$stage_signed" == true ]]; then
   if [[ "$dry_run" == true ]]; then
-    printf 'would stage signed portal-view for enclosing release %s (no operations)\n' "${LIGHT_PORTAL_VERSION:-<required>}"
+    printf 'would stage signed portal-view for enclosing release %s (no operations)\n' "${LIGHT_PORTAL_VERSION:-latest}"
   else
-    [[ -n "${LIGHT_PORTAL_VERSION:-}" ]] || die "--stage-signed requires LIGHT_PORTAL_VERSION (enclosing release)"
-    python3 -B "$script_dir/portal-view-release.py" prepare --enclosing-version "$LIGHT_PORTAL_VERSION"
+    python3 -B "$script_dir/portal-view-release.py" prepare --enclosing-version "${LIGHT_PORTAL_VERSION:-latest}"
   fi
 fi
 

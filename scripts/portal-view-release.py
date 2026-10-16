@@ -25,6 +25,7 @@ ROOT = BASE / 'light-gateway-rust/lightapi'
 CONFIG = BASE / 'light-gateway-rust/config'
 MODE = 'bootstrap'
 DEFAULT_READBACK = 'https://local.localhost/'
+SERVICE = 'light-gateway'
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -39,11 +40,11 @@ class RealRunner:
         self.cmd, self.env = compose_command(BASE, os.environ)
         result = self.run(self.cmd + ['config', '--format', 'json'])
         self.config = json.loads(result.stdout)
-        self.image = self.config.get('services', {}).get('light-gateway', {}).get('image')
+        self.image = self.config.get('services', {}).get(SERVICE, {}).get('image')
         release.require(isinstance(self.image, str) and self.image and not self.image.startswith('-'), 'target gateway image is missing')
-        self.recreate_command = shlex.join(self.cmd + ['up', '-d', '--no-deps', '--force-recreate', 'light-gateway'])
+        self.recreate_command = shlex.join(self.cmd + ['up', '-d', '--no-deps', '--force-recreate', SERVICE])
         default = urllib.parse.urlsplit(DEFAULT_READBACK)
-        ports = self.config['services']['light-gateway'].get('ports', [])
+        ports = self.config['services'][SERVICE].get('ports', [])
         published = next((port.get('published') for port in ports if isinstance(port, dict) and port.get('target') == 8443), None)
         if published is not None:
             release.require(str(published).isdigit() and 1 <= int(published) <= 65535, 'invalid gateway published port')
@@ -106,11 +107,11 @@ class RealRunner:
 
     def recreate_gateways(self):
         # Only explicit owner lifecycle commands use this; never preparation.
-        self.run(self.cmd + ['up', '-d', '--no-deps', '--force-recreate', 'light-gateway'])
+        self.run(self.cmd + ['up', '-d', '--no-deps', '--force-recreate', SERVICE])
 
     def trust(self):
         if self.opener is None:
-            ca = CONFIG / 'ca.pem'
+            ca = BASE / 'portal-bff-sso/tls/ca.pem' if SERVICE == 'portal-bff-sso' else CONFIG / 'ca.pem'
             context = ssl.create_default_context(cafile=str(ca)) if ca.is_file() else ssl.create_default_context()
             self.opener = self.opener_factory(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context), NoRedirect())
         return self.opener
@@ -213,24 +214,44 @@ def metadata_version(data):
     return release.component(values[0].split('=', 1)[1])
 
 
+def resolve_source(base, enclosing, transport):
+    """Resolve latest once; all payloads then come from a versioned directory."""
+    source = base.rstrip('/') + '/' + enclosing + '/portal-view'
+    if enclosing == 'latest':
+        with transport.open(source + '/release-pointer.env', timeout=60) as response:
+            release.require(response.status == 200, 'release pointer did not return HTTP 200')
+            data = response.read(4097)
+        release.require(len(data) <= 4096, 'release pointer is too large')
+        try:
+            text = data.decode('ascii')
+        except UnicodeError as error:
+            raise release.ActivationError('release pointer must be ASCII') from error
+        release.require(text.startswith('LIGHT_PORTAL_VERSION=') and text.count('\n') == 1
+                        and text.endswith('\n'), 'malformed release pointer')
+        enclosing = release.component(text.strip().split('=', 1)[1])
+        release.require(enclosing != 'latest', 'release pointer must select a versioned release')
+        source = base.rstrip('/') + '/' + enclosing + '/portal-view'
+    return source
+
+
 def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None):
-    """Optional signed discovery; only HTTP 404 means genuinely absent."""
+    """Resolve and prepare a verified signed package; missing publication fails closed."""
     release.component(enclosing)
     base = release_base or os.environ.get('LIGHT_PORTAL_RELEASE_BASE_URL', os.environ.get('LIGHT_PORTAL_ASSET_BASE_URL', 'https://cdn.networknt.com').rstrip('/') + '/light-portal/releases')
     parsed = urllib.parse.urlsplit(base)
     release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password
                     and not parsed.query and not parsed.fragment, 'release base must be HTTPS without credentials/query/fragment')
-    source = base.rstrip('/') + '/' + enclosing + '/portal-view'
     transport = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
+        source = resolve_source(base, enclosing, transport)
         with transport.open(source + '/portal-view-release.env', timeout=60) as response:
             release.require(response.status == 200, 'release env did not return HTTP 200')
             version = metadata_version(response.read(4097))
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise release.ActivationError('signed release metadata download failed: HTTP ' + str(error.code)) from error
-        print('portal-view signed release not published for ' + enclosing + '; serving legacy UI')
-        return
+        raise release.ActivationError('signed Portal View release not published for ' + enclosing
+                                      + '; publication is required before preparation') from error
     ROOT.mkdir(parents=True, exist_ok=True)
     with release.locked(ROOT):
         release.consistent(ROOT)  # Refuse a retained journal before any download.
@@ -256,7 +277,9 @@ def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None
     else:
         print('PORTAL_VIEW_RELEASE: WARNING: verified and staged ' + version + ' while ' + active
               + ' remains active; active/rollback state unchanged. Activate explicitly: '
-              'python3 -B scripts/portal-view-release.py activate --version ' + version, file=sys.stderr)
+              + 'python3 -B scripts/portal-view-release.py '
+              + ('--service portal-bff-sso ' if SERVICE == 'portal-bff-sso' else '')
+              + 'activate --version ' + version, file=sys.stderr)
 
 
 def installer_config():
@@ -289,6 +312,7 @@ class UsageError(Exception):
 
 def parser():
     cli = Parser(description='Explicit verified Portal View release lifecycle (never run by bare lt)')
+    cli.add_argument('--service', choices=('light-gateway', 'portal-bff-sso'), default='light-gateway')
     commands = cli.add_subparsers(dest='command', required=True, parser_class=Parser)
     staging = commands.add_parser('stage')
     staging.add_argument('--version', required=True)
@@ -305,7 +329,7 @@ def parser():
             command.add_argument('--expect-legacy', action='store_true')
     commands.add_parser('status')
     prep = commands.add_parser('prepare')
-    prep.add_argument('--enclosing-version', required=True)
+    prep.add_argument('--enclosing-version', default=os.environ.get('LIGHT_PORTAL_VERSION', 'latest'))
     prep.add_argument('--release-base')
     legacy = commands.add_parser('legacy-dist')
     legacy.add_argument('--archive', required=True, type=Path)
@@ -320,6 +344,7 @@ def source_for(args, env):
     enclosing = env.get('LIGHT_PORTAL_VERSION')
     release.require(enclosing is not None and enclosing != '', 'remote stage requires explicit LIGHT_PORTAL_VERSION (enclosing release), separate from --version')
     release.component(enclosing)
+    release.require(enclosing != 'latest', 'stage requires a pinned LIGHT_PORTAL_VERSION; use prepare to resolve latest, then pin the enclosing release and artifact version')
     base = env.get('LIGHT_PORTAL_ASSET_BASE_URL', 'https://cdn.networknt.com').rstrip('/')
     parsed = urllib.parse.urlsplit(base)
     release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username
@@ -328,12 +353,27 @@ def source_for(args, env):
     parsed = urllib.parse.urlsplit(release_base)
     release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username
                     and not parsed.password and not parsed.query and not parsed.fragment, 'release base must be HTTPS without credentials/query/fragment')
-    return release_base + '/' + enclosing + '/portal-view'
+    transport = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    return resolve_source(release_base, enclosing, transport)
+
+
+def select_sso():
+    """Select independent SSO assets/state and the exact effective Compose image."""
+    global ROOT, CONFIG, SERVICE, DEFAULT_READBACK
+    ROOT = BASE / 'portal-bff-sso/lightapi'
+    CONFIG = BASE / 'portal-bff-sso/config'
+    SERVICE = 'portal-bff-sso'
+    env_file = Path(os.environ.get('BOOTSTRAP_ENV_FILE', str(BASE / '.env.bootstrap')))
+    host = os.environ.get('CUSTOMER_PORTAL_HOST') or local_env_value(env_file, 'CUSTOMER_PORTAL_HOST') or 'dev.yourcompany.com'
+    release.require(re.fullmatch(r'[A-Za-z0-9.-]+', host), 'invalid CUSTOMER_PORTAL_HOST')
+    DEFAULT_READBACK = 'https://' + host + '/'
 
 
 def main(argv=None, runner_factory=RealRunner):
     try:
         args = parser().parse_args(argv)
+        if args.service == 'portal-bff-sso':
+            select_sso()
         if args.command == 'prepare':
             prepare(args.enclosing_version, args.release_base, runner_factory)
         elif args.command == 'legacy-dist':
