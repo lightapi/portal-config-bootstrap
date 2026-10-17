@@ -5,7 +5,7 @@ CREATE DATABASE configserver;
 -- PostgreSQL database dump
 --
 
-\restrict Ak48K22Rjp0uvkcWcoTpCfN7VladY8rsorgR7f4SPeThaFZhyeiOVIjK8vBW9mT
+\restrict H5gGQ0WxqK1s3wsjUCgrw3JJGvvEdoOHtpHj1hgRhfJZthkjDXJ6YsTybOwFM5f
 
 -- Dumped from database version 17.10
 -- Dumped by pg_dump version 17.10
@@ -21463,6 +21463,29 @@ COMMENT ON COLUMN public.gateway_tool_publication_t.update_user IS 'User or serv
 --
 
 COMMENT ON COLUMN public.gateway_tool_publication_t.update_ts IS 'Timestamp when this record was last updated.';
+
+
+--
+-- Name: google_identity_t; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.google_identity_t (
+    google_identity_id uuid NOT NULL,
+    issuer character varying(128) NOT NULL,
+    subject character varying(255) NOT NULL,
+    user_id uuid NOT NULL,
+    aggregate_version bigint NOT NULL,
+    CONSTRAINT google_identity_t_aggregate_version_check CHECK ((aggregate_version > 0)),
+    CONSTRAINT google_identity_t_issuer_check CHECK (((issuer)::text = 'https://accounts.google.com'::text)),
+    CONSTRAINT google_identity_t_subject_check CHECK (((subject)::text ~ '^[0-9]{1,255}$'::text))
+);
+
+
+--
+-- Name: TABLE google_identity_t; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.google_identity_t IS 'Projection of GoogleIdentityLinkedEvent; never insert or reassign bindings directly.';
 
 
 --
@@ -44293,6 +44316,30 @@ ALTER TABLE ONLY public.gateway_tool_publication_t
 
 
 --
+-- Name: google_identity_t google_identity_t_issuer_subject_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_identity_t
+    ADD CONSTRAINT google_identity_t_issuer_subject_key UNIQUE (issuer, subject);
+
+
+--
+-- Name: google_identity_t google_identity_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_identity_t
+    ADD CONSTRAINT google_identity_t_pkey PRIMARY KEY (google_identity_id);
+
+
+--
+-- Name: google_identity_t google_identity_t_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_identity_t
+    ADD CONSTRAINT google_identity_t_user_id_key UNIQUE (user_id);
+
+
+--
 -- Name: group_col_filter_t group_col_filter_t_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -50815,6 +50862,14 @@ ALTER TABLE ONLY public.gateway_tool_publication_t
 
 
 --
+-- Name: google_identity_t google_identity_t_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_identity_t
+    ADD CONSTRAINT google_identity_t_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.user_t(user_id);
+
+
+--
 -- Name: group_col_filter_t group_col_filter_t_host_id_endpoint_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -53346,6 +53401,8 @@ INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, chi
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'user_t', 'public', 'config_snapshot_t', 'config_snapshot_t_user_id_fkey', 'IGNORE', 'NONE', 'Immutable configuration snapshots are retained independently', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
+    ('public', 'user_t', 'public', 'google_identity_t', 'google_identity_t_user_id_fkey', 'IGNORE', 'NONE', 'Immutable Google identity binding retained; sign-in requires an active user and host membership', DEFAULT, CURRENT_TIMESTAMP);
+INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'user_t', 'public', 'group_user_t', 'group_user_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
 INSERT INTO cascade_relationship_policy_seed_t (parent_schema, parent_table, child_schema, child_table, constraint_name, delete_action, restore_action, policy_description, update_user, update_ts) VALUES
     ('public', 'user_t', 'public', 'role_user_t', 'role_user_t_user_id_fkey', 'SOFT_DELETE', 'RESTORE', 'Recoverable projection relationship', DEFAULT, CURRENT_TIMESTAMP);
@@ -53393,7 +53450,7 @@ END
 $install_cascade_triggers$;
 
 COMMIT;
-\unrestrict Ak48K22Rjp0uvkcWcoTpCfN7VladY8rsorgR7f4SPeThaFZhyeiOVIjK8vBW9mT
+\unrestrict H5gGQ0WxqK1s3wsjUCgrw3JJGvvEdoOHtpHj1hgRhfJZthkjDXJ6YsTybOwFM5f
 
 
 INSERT INTO public.user_t (user_id, language, first_name, last_name, email, user_type, verified, password)
