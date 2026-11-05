@@ -2,14 +2,8 @@ name: Portal View release downloads
 
 on:
   pull_request:
-    paths:
-      - 'scripts/*portal*'
-      - '.github/workflows/portal-view-downloads.yml'
   push:
     branches: [master]
-    paths:
-      - 'scripts/*portal*'
-      - '.github/workflows/portal-view-downloads.yml'
 
 permissions:
   contents: read
@@ -20,21 +14,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.9', '3.12']
+        python: ['3.9', '3.12', '3.13', '3.14']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python }}
       - name: Install release test dependency
-        run: python3 -m pip install 'PyYAML==6.0.1'
-      - name: Check pinned sources and release contracts with ambient proxies
-        env:
-          HTTP_PROXY: http://127.0.0.1:9
-          HTTPS_PROXY: http://127.0.0.1:9
-          ALL_PROXY: http://127.0.0.1:9
-          NO_PROXY: ''
-        run: >-
-          env http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9
-          all_proxy=http://127.0.0.1:9 no_proxy=
-          python3 -B -m unittest discover -s scripts -p 'test_portal_view*.py'
+        run: python3 -m pip install 'PyYAML==6.0.3'
+      - name: Check source snapshot and release contracts with ambient proxies
+        run: |
+          python3 -B - <<'PYTHON'
+          import os
+          import subprocess
+          import sys
+          proxy = 'http://127.0.0.1:9'
+          for name in ('http_proxy', 'https_proxy', 'all_proxy'):
+              os.environ[name] = os.environ[name.upper()] = proxy
+          os.environ['no_proxy'] = os.environ['NO_PROXY'] = ''
+          subprocess.run([sys.executable, '-B', '-m', 'unittest', 'discover',
+                          '-s', 'scripts', '-p', 'test_portal_view*.py'], check=True)
+          PYTHON

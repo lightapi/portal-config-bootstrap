@@ -278,9 +278,8 @@ def download_opener(*handlers):
     return transport
 
 
-def fetch(url, destination, opener=None):
-    transport = opener if opener is not None else download_opener()
-    with transport.open(url, timeout=60) as response, destination.open('xb') as out:
+def fetch(url, destination, opener):
+    with opener.open(url, timeout=60) as response, destination.open('xb') as out:
         shutil.copyfileobj(response, out)
 
 
@@ -300,12 +299,20 @@ def stage(source, version, root, key_dir, downloader=None):
     version, root = component(version), Path(root)
     if isinstance(source, Path):
         directory(source)
-        transfer = lambda name, destination: shutil.copyfile(regular(source / name), destination)
+
+        def transfer(name, destination):
+            shutil.copyfile(regular(source / name), destination)
     else:
         if downloader is None:
             transport = download_opener()
-            downloader = lambda url, destination: fetch(url, destination, opener=transport)
-        transfer = lambda name, destination: downloader(source.rstrip('/') + '/' + name, destination)
+
+            def remote_download(url, destination):
+                fetch(url, destination, transport)
+        else:
+            remote_download = downloader
+
+        def transfer(name, destination):
+            remote_download(source.rstrip('/') + '/' + name, destination)
     root.mkdir(parents=True, exist_ok=True)
     directory(root)
     for part in ('releases', '.downloads'):

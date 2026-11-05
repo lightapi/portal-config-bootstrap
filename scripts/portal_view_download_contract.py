@@ -1,5 +1,4 @@
 """Release download identity through real urllib processing and localhost I/O."""
-import ast
 import contextlib
 import hashlib
 import json
@@ -18,23 +17,9 @@ import test_portal_view_release as portable
 r, cli = portable.r, portable.cli
 
 
-SYMBOLS = ('download_opener', 'fetch', 'stage')
+from portal_view_source import source_hashes
+
 MANIFEST = 'portal-view-download-source.json'
-
-
-def source_hashes(path):
-    nodes = {node.name: node for node in ast.parse(path.read_text()).body
-             if isinstance(node, ast.FunctionDef)}
-    result = {}
-    for name in SYMBOLS:
-        node = nodes[name]
-        if node.body and isinstance(node.body[0], ast.Expr) and isinstance(
-                node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str):
-            node.body.pop(0)  # Documentation changes do not change the contract.
-        for child in ast.walk(node):
-            child._fields = tuple(field for field in child._fields if field != 'type_params')
-        result[name] = hashlib.sha256(ast.dump(node).encode()).hexdigest()
-    return result
 
 
 @contextlib.contextmanager
@@ -55,6 +40,9 @@ class SourceContract:
         scripts = Path(__file__).parent
         manifest = json.loads((scripts / MANIFEST).read_text())
         self.assertEqual(source_hashes(scripts / 'portal_view_release.py'), manifest['symbols'])
+        self.assertRegex(manifest['canonicalCommit'], r'^[0-9a-f]{40}$')
+        self.assertEqual(hashlib.sha256((scripts / 'portal_view_source.py').read_bytes()).hexdigest(),
+                         manifest['sourceSchemaSha256'])
         self.assertEqual(hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                          manifest['fixtureSha256'])
 

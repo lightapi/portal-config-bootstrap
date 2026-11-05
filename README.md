@@ -256,9 +256,12 @@ and gateway readback requests are unchanged.
 Maintainers synchronize download helpers and contract test support from
 `portal-config-loc` using its `scripts/sync-portal-view-downloads.py --check`
 (or `--write` after a canonical change) with sibling checkouts present. The
-release test suite verifies local helpers and fixture against the pinned source
-manifest; its CI workflow runs from a single checkout on Python 3.9 and 3.12,
-including hostile proxy settings.
+release test suite verifies local helpers and fixture against the source consistency
+snapshot; its CI workflow runs from a single checkout on Python 3.9, 3.12, 3.13, and 3.14,
+including hostile proxy settings. It runs on every pull request and master push
+so changes to Compose, installer, and asset-sync inputs also run the tests.
+The snapshot records a canonical commit for audit and accidental-drift checks;
+it is not independent verification when source and snapshot change together.
 
 The default selection is `latest`. Preparation reads
 `https://cdn.networknt.com/light-portal/releases/latest/portal-view/release-pointer.env`
