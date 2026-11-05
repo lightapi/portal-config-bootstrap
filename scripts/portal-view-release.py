@@ -241,7 +241,7 @@ def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None
     parsed = urllib.parse.urlsplit(base)
     release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password
                     and not parsed.query and not parsed.fragment, 'release base must be HTTPS without credentials/query/fragment')
-    transport = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    transport = opener if opener is not None else release.download_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
         source = resolve_source(base, enclosing, transport)
         with transport.open(source + '/portal-view-release.env', timeout=60) as response:
@@ -353,8 +353,7 @@ def source_for(args, env):
     parsed = urllib.parse.urlsplit(release_base)
     release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username
                     and not parsed.password and not parsed.query and not parsed.fragment, 'release base must be HTTPS without credentials/query/fragment')
-    transport = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    return resolve_source(release_base, enclosing, transport)
+    return resolve_source(release_base, enclosing, None)
 
 
 def select_sso():

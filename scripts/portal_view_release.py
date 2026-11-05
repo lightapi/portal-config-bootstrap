@@ -268,8 +268,18 @@ def pointer(root, version):
             name.unlink()
 
 
-def fetch(url, destination):
-    with urllib.request.urlopen(url, timeout=60) as response, destination.open('xb') as out:
+def download_opener(*handlers):
+    """Build a release download transport with the configured client identity."""
+    identity = os.environ.get('PORTAL_VIEW_USER_AGENT') or 'portal-view-release/1.0'
+    require(bool(identity.strip()) and all(32 <= ord(char) < 127 for char in identity),
+            'PORTAL_VIEW_USER_AGENT must be nonempty printable ASCII')
+    transport = urllib.request.build_opener(*handlers)
+    transport.addheaders = [('User-Agent', identity)]
+    return transport
+
+
+def fetch(url, destination, opener):
+    with opener.open(url, timeout=60) as response, destination.open('xb') as out:
         shutil.copyfileobj(response, out)
 
 
@@ -285,8 +295,24 @@ def leftover(path):
             'Confirm no staging is running, inspect it, remove it, then retry')
 
 
-def stage(source, version, root, key_dir, downloader=fetch):
+def stage(source, version, root, key_dir, downloader=None):
     version, root = component(version), Path(root)
+    if isinstance(source, Path):
+        directory(source)
+
+        def transfer(name, destination):
+            shutil.copyfile(regular(source / name), destination)
+    else:
+        if downloader is None:
+            transport = download_opener()
+
+            def remote_download(url, destination):
+                fetch(url, destination, transport)
+        else:
+            remote_download = downloader
+
+        def transfer(name, destination):
+            remote_download(source.rstrip('/') + '/' + name, destination)
     root.mkdir(parents=True, exist_ok=True)
     directory(root)
     for part in ('releases', '.downloads'):
@@ -300,11 +326,7 @@ def stage(source, version, root, key_dir, downloader=fetch):
         downloaded.mkdir()  # Never reuse/remove an unknown earlier download.
         owned_download = True
         for name in ('portal-view-' + version + '.zip', 'release-manifest.json', 'release-manifest.sig'):
-            if isinstance(source, Path):
-                directory(source)
-                shutil.copyfile(regular(source / name), downloaded / name)
-            else:
-                downloader(source.rstrip('/') + '/' + name, downloaded / name)
+            transfer(name, downloaded / name)
         manifest = verify_signature(downloaded, key_dir)
         require(manifest['version'] == version, 'manifest version mismatch')
         archive = downloaded / manifest['archive']['name']
