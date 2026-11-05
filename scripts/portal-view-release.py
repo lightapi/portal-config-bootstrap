@@ -242,6 +242,7 @@ def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None
     release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password
                     and not parsed.query and not parsed.fragment, 'release base must be HTTPS without credentials/query/fragment')
     transport = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    transport.addheaders = [('User-Agent', 'portal-view-release/1.0')]
     try:
         source = resolve_source(base, enclosing, transport)
         with transport.open(source + '/portal-view-release.env', timeout=60) as response:
@@ -354,6 +355,7 @@ def source_for(args, env):
     release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username
                     and not parsed.password and not parsed.query and not parsed.fragment, 'release base must be HTTPS without credentials/query/fragment')
     transport = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    transport.addheaders = [('User-Agent', 'portal-view-release/1.0')]
     return resolve_source(release_base, enclosing, transport)
 
 

@@ -41,6 +41,33 @@ def snapshot(parent):
     return result
 
 
+class DownloadIdentityTests(unittest.TestCase):
+    def test_metadata_openers_identify_release_client(self):
+        for command in ('prepare', 'stage'):
+            with self.subTest(command=command):
+                transport = Mock()
+                transport.open.side_effect = urllib.error.HTTPError(
+                    'https://cdn.example', 403, 'Forbidden', {}, None)
+                with patch.object(cli.urllib.request, 'build_opener', return_value=transport):
+                    if command == 'prepare':
+                        with self.assertRaises(r.ActivationError):
+                            cli.prepare('latest', 'https://cdn.example/releases')
+                    else:
+                        args = types.SimpleNamespace(from_dir=None)
+                        cli.source_for(args, {'LIGHT_PORTAL_VERSION': '2.6.0'})
+                self.assertEqual(transport.addheaders,
+                                 [('User-Agent', 'portal-view-release/1.0')])
+
+    def test_archive_fetch_identifies_release_client(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / 'archive.zip'
+            with patch.object(r.urllib.request, 'urlopen', return_value=response(b'package')) as opened:
+                r.fetch('https://cdn.example/archive.zip', destination)
+            request = opened.call_args.args[0]
+            self.assertEqual(request.get_header('User-agent'), 'portal-view-release/1.0')
+            self.assertEqual(destination.read_bytes(), b'package')
+
+
 class AdapterTests(unittest.TestCase):
     def setUp(self):
         self.fixture = portable.ReleaseTests('runTest')

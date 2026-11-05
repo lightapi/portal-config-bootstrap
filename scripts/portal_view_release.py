@@ -269,7 +269,8 @@ def pointer(root, version):
 
 
 def fetch(url, destination):
-    with urllib.request.urlopen(url, timeout=60) as response, destination.open('xb') as out:
+    request = urllib.request.Request(url, headers={'User-Agent': 'portal-view-release/1.0'})
+    with urllib.request.urlopen(request, timeout=60) as response, destination.open('xb') as out:
         shutil.copyfileobj(response, out)
 
 
