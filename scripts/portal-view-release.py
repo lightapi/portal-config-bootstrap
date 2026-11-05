@@ -32,14 +32,105 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise release.ActivationError('readback redirects are refused')
 
 
+def parse_compose_config(text, service):
+    """Read one service's image and ports from `compose config` YAML.
+
+    podman-compose cannot print JSON, and PyYAML may be unavailable on locked-down
+    hosts, so this reads only the block style those tools normalize to. Anything
+    outside it is refused rather than guessed.
+    """
+    def unsupported():
+        raise release.ActivationError('compose config output is not in a supported format')
+
+    def scalar(value):
+        value = value.strip()
+        if value[:1] in ('"', "'"):
+            quoted = re.fullmatch(r'(["\'])(.*?)\1(?:\s+#.*)?', value)
+            if not quoted:
+                unsupported()
+            return quoted.group(2)
+        value = re.sub(r'\s+#.*$', '', value)
+        if not value or value[0] in '[{|>&*!':
+            unsupported()
+        return value
+
+    def number(value):
+        return int(value) if value.isdigit() else value
+
+    lines = [(len(raw) - len(raw.lstrip(' ')), raw.strip()) for raw in text.splitlines()
+             if raw.strip() and not raw.lstrip().startswith('#')]
+
+    def body(rows, start):
+        end = start + 1
+        while end < len(rows) and rows[end][0] > rows[start][0]:
+            end += 1
+        return rows[start + 1:end]
+
+    top = next((i for i, (indent, line) in enumerate(lines) if indent == 0 and line == 'services:'), None)
+    if top is None:
+        unsupported()
+    services = body(lines, top)
+    start = next((i for i, (indent, line) in enumerate(services)
+                  if indent == services[0][0] and line == service + ':'), None)
+    release.require(start is not None, 'compose config has no ' + service + ' service')
+    fields = body(services, start)
+    image, ports = None, []
+    index = 0
+    while index < len(fields):
+        indent, line = fields[index]
+        index += 1
+        if indent != fields[0][0]:
+            continue
+        if line.startswith('image:'):
+            image = scalar(line[len('image:'):])
+        elif line == 'ports:' or line.startswith('ports: '):
+            if line != 'ports:':
+                if line[len('ports:'):].strip() != '[]':
+                    unsupported()
+                continue
+            items = []
+            while index < len(fields) and (fields[index][0] > indent
+                                           or (fields[index][0] == indent and fields[index][1].startswith('-'))):
+                if fields[index][1].startswith('-') and fields[index][0] >= indent:
+                    items.append([fields[index]])
+                elif not items:
+                    unsupported()
+                else:
+                    items[-1].append(fields[index])
+                index += 1
+            for item in items:
+                first = item[0][1][1:].strip()
+                key = re.match(r'(target|published|mode|protocol|host_ip|name|app_protocol):\s*(.*)$', first)
+                if not key:
+                    port = scalar(first).split('/')[0].split(':')
+                    ports.append({'target': number(port[-1]),
+                                  'published': port[-2] if len(port) > 1 and port[-2] else None})
+                    continue
+                pairs = {key.group(1): key.group(2)}
+                for _, extra in item[1:]:
+                    match = re.match(r'([a-z_]+):\s*(.*)$', extra)
+                    if match:
+                        pairs.setdefault(match.group(1), match.group(2))
+                port = {'target': number(scalar(pairs['target'])) if 'target' in pairs else None}
+                if pairs.get('published'):
+                    port['published'] = scalar(pairs['published'])
+                ports.append(port)
+    return {'services': {service: {'image': image, 'ports': ports}}}
+
+
 class RealRunner:
     """Repository Compose adapter; all effects are injectable for isolated tests."""
     def __init__(self, readback_url=None, execute=None, opener_factory=None):
         self.execute = execute or subprocess.run
         self.opener_factory = opener_factory or urllib.request.build_opener
         self.cmd, self.env = compose_command(BASE, os.environ)
-        result = self.run(self.cmd + ['config', '--format', 'json'])
-        self.config = json.loads(result.stdout)
+        result = self.run(self.cmd + ['config', '--format', 'json'], check=False)
+        if result.returncode == 0:
+            self.config = json.loads(result.stdout)
+        else:
+            # podman-compose rejects --format; read its YAML output instead.
+            result = self.run(self.cmd + ['config'])
+            self.config = parse_compose_config(result.stdout, SERVICE)
         self.image = self.config.get('services', {}).get(SERVICE, {}).get('image')
         release.require(isinstance(self.image, str) and self.image and not self.image.startswith('-'), 'target gateway image is missing')
         self.recreate_command = shlex.join(self.cmd + ['up', '-d', '--no-deps', '--force-recreate', SERVICE])
@@ -63,7 +154,9 @@ class RealRunner:
 
     def run(self, args, check=True, timeout=180):
         result = self.execute(args, cwd=BASE, env=self.env, capture_output=True, text=True, timeout=timeout)
-        release.require(not check or result.returncode == 0, 'command failed: ' + shlex.join(args))
+        detail = result.stderr.strip()[-400:] if isinstance(result.stderr, str) else ''
+        release.require(not check or result.returncode == 0,
+                        'command failed: ' + shlex.join(args) + (': ' + detail if detail else ''))
         return result
 
     def ensure_image(self):

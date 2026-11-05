@@ -253,6 +253,11 @@ staging creates directories, and one transport serves each stage batch.
 Injected preparation transports retain their headers. Signature verification
 and gateway readback requests are unchanged.
 
+Reading the gateway image and published port works with Docker Compose and with
+podman-compose, which has no `config --format json` and may run without PyYAML:
+when the JSON form is refused, the runner reads the YAML `config` output with a
+small built-in parser limited to the `light-gateway` image and `ports`.
+
 Maintainers synchronize download helpers and contract test support from
 `portal-config-loc` using its `scripts/sync-portal-view-downloads.py --check`
 (or `--write` after a canonical change) with sibling checkouts present. The
