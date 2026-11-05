@@ -259,6 +259,12 @@ require no repository URL edits. Metadata, pointer, signature, configuration and
 image-validation errors (including HTTP 404) stop preparation. Do not obtain
 trust keys from the same download location as the package.
 
+Release downloads identify as `portal-view-release/1.0` to avoid CDN rules that
+reject Python's default User-Agent. Operators can set `PORTAL_VIEW_USER_AGENT`
+to a nonempty printable ASCII value for a different CDN client identity.
+Injected transports retain their caller-configured headers. This setting does
+not change signature verification or gateway readback requests.
+
 Provision public keys at
 `light-gateway-rust/config/portal-view-release-keys/<keyId>.pem` and customize
 `light-gateway-rust/config/portal-config.json` before preparation. Dev ships an

@@ -268,9 +268,18 @@ def pointer(root, version):
             name.unlink()
 
 
+def download_opener(*handlers):
+    """Identify release downloads without changing caller-owned transports."""
+    identity = os.environ.get('PORTAL_VIEW_USER_AGENT', 'portal-view-release/1.0')
+    require(bool(identity.strip()) and all(32 <= ord(char) < 127 for char in identity),
+            'PORTAL_VIEW_USER_AGENT must be nonempty printable ASCII')
+    transport = urllib.request.build_opener(*handlers)
+    transport.addheaders = [('User-Agent', identity)]
+    return transport
+
+
 def fetch(url, destination):
-    request = urllib.request.Request(url, headers={'User-Agent': 'portal-view-release/1.0'})
-    with urllib.request.urlopen(request, timeout=60) as response, destination.open('xb') as out:
+    with download_opener().open(url, timeout=60) as response, destination.open('xb') as out:
         shutil.copyfileobj(response, out)
 
 
