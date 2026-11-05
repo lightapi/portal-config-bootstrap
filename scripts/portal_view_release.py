@@ -269,8 +269,8 @@ def pointer(root, version):
 
 
 def download_opener(*handlers):
-    """Identify release downloads without changing caller-owned transports."""
-    identity = os.environ.get('PORTAL_VIEW_USER_AGENT', 'portal-view-release/1.0')
+    """Build a release download transport with the configured client identity."""
+    identity = os.environ.get('PORTAL_VIEW_USER_AGENT') or 'portal-view-release/1.0'
     require(bool(identity.strip()) and all(32 <= ord(char) < 127 for char in identity),
             'PORTAL_VIEW_USER_AGENT must be nonempty printable ASCII')
     transport = urllib.request.build_opener(*handlers)
@@ -278,9 +278,18 @@ def download_opener(*handlers):
     return transport
 
 
-def fetch(url, destination):
-    with download_opener().open(url, timeout=60) as response, destination.open('xb') as out:
+def fetch(url, destination, opener=None):
+    transport = opener if opener is not None else download_opener()
+    with transport.open(url, timeout=60) as response, destination.open('xb') as out:
         shutil.copyfileobj(response, out)
+
+
+def download_batch(source, downloader=None):
+    """Select and validate the default remote downloader before staging writes."""
+    if downloader is None and not isinstance(source, Path):
+        transport = download_opener()
+        return lambda url, destination: fetch(url, destination, opener=transport)
+    return downloader
 
 
 def remove_owned(path):
@@ -295,8 +304,9 @@ def leftover(path):
             'Confirm no staging is running, inspect it, remove it, then retry')
 
 
-def stage(source, version, root, key_dir, downloader=fetch):
+def stage(source, version, root, key_dir, downloader=None):
     version, root = component(version), Path(root)
+    downloader = download_batch(source, downloader)
     root.mkdir(parents=True, exist_ok=True)
     directory(root)
     for part in ('releases', '.downloads'):

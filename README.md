@@ -246,6 +246,17 @@ Portal View is built once by the release publisher. Deployment configuration liv
 in `config/portal-config.json`; changing customer authentication or URLs does not
 require Node.js, npm, a Portal View checkout, or rebuilding the SPA.
 
+Release downloads identify as `portal-view-release/1.0`. Set
+`PORTAL_VIEW_USER_AGENT` to printable ASCII text to override it; an unset or
+empty value uses the default. Invalid nonempty values are refused before remote
+staging creates directories, and one transport serves each stage batch.
+Injected preparation transports retain their headers. Signature verification
+and gateway readback requests are unchanged.
+
+Maintainers synchronize download helpers and contract test support from
+`portal-config-loc` using its `scripts/sync-portal-view-downloads.py --check`
+(or `--write` after a canonical change) with sibling checkouts present.
+
 The default selection is `latest`. Preparation reads
 `https://cdn.networknt.com/light-portal/releases/latest/portal-view/release-pointer.env`
 once and resolves a versioned release directory. It then verifies the signed
@@ -258,12 +269,6 @@ Set `LIGHT_PORTAL_VERSION=<enclosing-release>` to pin a release. Override
 require no repository URL edits. Metadata, pointer, signature, configuration and
 image-validation errors (including HTTP 404) stop preparation. Do not obtain
 trust keys from the same download location as the package.
-
-Release downloads identify as `portal-view-release/1.0` to avoid CDN rules that
-reject Python's default User-Agent. Operators can set `PORTAL_VIEW_USER_AGENT`
-to a nonempty printable ASCII value for a different CDN client identity.
-Injected transports retain their caller-configured headers. This setting does
-not change signature verification or gateway readback requests.
 
 Provision public keys at
 `light-gateway-rust/config/portal-view-release-keys/<keyId>.pem` and customize

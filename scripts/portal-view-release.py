@@ -353,7 +353,7 @@ def source_for(args, env):
     parsed = urllib.parse.urlsplit(release_base)
     release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username
                     and not parsed.password and not parsed.query and not parsed.fragment, 'release base must be HTTPS without credentials/query/fragment')
-    return release_base + '/' + enclosing + '/portal-view'
+    return resolve_source(release_base, enclosing, None)
 
 
 def select_sso():

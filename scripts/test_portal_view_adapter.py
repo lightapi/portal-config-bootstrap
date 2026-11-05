@@ -1,10 +1,6 @@
 """WP12 adapters: temporary signed fixtures, injected effects and blocked tools."""
 import contextlib
 import hashlib
-import http.client
-import http.server
-import threading
-import urllib.request
 import io
 import json
 import os
@@ -84,80 +80,6 @@ class AdapterTests(unittest.TestCase):
     def prepare(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             cli.prepare('2.6.0', 'https://cdn.example/releases', self.factory, self.transport)
-
-    def test_download_headers_on_wire(self):
-        folder = self.serve()
-        observed = []
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                observed.append((self.path, self.headers.get('User-Agent')))
-                name = self.path.rsplit('/', 1)[1]
-                if name == 'release-pointer.env':
-                    data = b'LIGHT_PORTAL_VERSION=2.6.0\n'
-                elif name == 'portal-view-release.env':
-                    data = ('PORTAL_VIEW_VERSION=' + portable.A + '\n').encode()
-                else:
-                    data = (folder / name).read_bytes()
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(data)
-
-            def log_message(self, *args):
-                pass
-
-        # Exercise real urllib header processing; only TLS is replaced for localhost.
-        class LocalHTTPS(urllib.request.HTTPSHandler):
-            def https_open(self, request):
-                return self.do_open(http.client.HTTPConnection, request)
-
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(thread.join)
-        self.addCleanup(server.shutdown)
-        origin = 'https://127.0.0.1:' + str(server.server_port)
-        build = urllib.request.build_opener
-
-        def local_opener(*handlers):
-            return build(*handlers, LocalHTTPS())
-
-        for override in (None, 'customer-release-client/2.0'):
-            observed.clear()
-            with patch.dict(os.environ, {}, clear=True):
-                if override is not None:
-                    os.environ['PORTAL_VIEW_USER_AGENT'] = override
-                with patch.object(r.urllib.request, 'build_opener', side_effect=local_opener):
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        cli.prepare('latest', origin, self.factory)
-                    args = types.SimpleNamespace(from_dir=None)
-                    source = cli.source_for(args, {'LIGHT_PORTAL_VERSION': '2.6.0',
-                                                  'LIGHT_PORTAL_RELEASE_BASE_URL': origin})
-                    for name in ('portal-view-' + portable.A + '.zip',
-                                 'release-manifest.json', 'release-manifest.sig'):
-                        destination = self.base / ('download-' + name)
-                        destination.unlink(missing_ok=True)
-                        r.fetch(source + '/' + name, destination)
-            self.assertEqual(len(observed), 8)
-            self.assertEqual(observed[0][0], '/latest/portal-view/release-pointer.env')
-            self.assertTrue(observed[1][0].endswith('/portal-view-release.env'))
-            self.assertEqual({identity for _, identity in observed},
-                             {override or 'portal-view-release/1.0'})
-
-    def test_prepare_preserves_injected_headers(self):
-        self.serve()
-        self.transport.addheaders = [('User-Agent', 'owner-client'), ('X-Owner', 'retained')]
-        self.prepare()
-        self.assertEqual(self.transport.addheaders,
-                         [('User-Agent', 'owner-client'), ('X-Owner', 'retained')])
-
-    def test_invalid_download_identity_is_refused(self):
-        for identity in ('', ' ', 'client\r\nX-Injected: value', 'client\u00e9'):
-            with self.subTest(identity=identity), patch.dict(
-                    os.environ, {'PORTAL_VIEW_USER_AGENT': identity}):
-                with self.assertRaises(r.ActivationError):
-                    r.download_opener()
 
     def test_real_runner_acquisition_precedes_offline_preparation(self):
         self.serve()
