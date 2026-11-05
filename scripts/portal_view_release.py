@@ -284,14 +284,6 @@ def fetch(url, destination, opener=None):
         shutil.copyfileobj(response, out)
 
 
-def download_batch(source, downloader=None):
-    """Select and validate the default remote downloader before staging writes."""
-    if downloader is None and not isinstance(source, Path):
-        transport = download_opener()
-        return lambda url, destination: fetch(url, destination, opener=transport)
-    return downloader
-
-
 def remove_owned(path):
     # Only called for directories created exclusively by this invocation.
     for parent, dirs, files in os.walk(path):
@@ -306,7 +298,14 @@ def leftover(path):
 
 def stage(source, version, root, key_dir, downloader=None):
     version, root = component(version), Path(root)
-    downloader = download_batch(source, downloader)
+    if isinstance(source, Path):
+        directory(source)
+        transfer = lambda name, destination: shutil.copyfile(regular(source / name), destination)
+    else:
+        if downloader is None:
+            transport = download_opener()
+            downloader = lambda url, destination: fetch(url, destination, opener=transport)
+        transfer = lambda name, destination: downloader(source.rstrip('/') + '/' + name, destination)
     root.mkdir(parents=True, exist_ok=True)
     directory(root)
     for part in ('releases', '.downloads'):
@@ -320,11 +319,7 @@ def stage(source, version, root, key_dir, downloader=None):
         downloaded.mkdir()  # Never reuse/remove an unknown earlier download.
         owned_download = True
         for name in ('portal-view-' + version + '.zip', 'release-manifest.json', 'release-manifest.sig'):
-            if isinstance(source, Path):
-                directory(source)
-                shutil.copyfile(regular(source / name), downloaded / name)
-            else:
-                downloader(source.rstrip('/') + '/' + name, downloaded / name)
+            transfer(name, downloaded / name)
         manifest = verify_signature(downloaded, key_dir)
         require(manifest['version'] == version, 'manifest version mismatch')
         archive = downloaded / manifest['archive']['name']

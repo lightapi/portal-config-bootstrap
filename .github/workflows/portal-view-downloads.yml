@@ -1,0 +1,38 @@
+name: Portal View release downloads
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/*portal*'
+      - '.github/workflows/portal-view-downloads.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'scripts/*portal*'
+      - '.github/workflows/portal-view-downloads.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  downloads:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Check pinned sources and release contracts with ambient proxies
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          http_proxy: http://127.0.0.1:9
+          https_proxy: http://127.0.0.1:9
+          all_proxy: http://127.0.0.1:9
+          NO_PROXY: ''
+          no_proxy: ''
+        run: python3 -B -m unittest discover -s scripts -p 'test_portal_view*.py'

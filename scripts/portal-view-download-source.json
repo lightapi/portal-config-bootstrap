@@ -1,0 +1,9 @@
+{
+  "canonicalSource": "lightapi/portal-config-loc/scripts/portal_view_release.py",
+  "fixtureSha256": "c5022d9eb37aa22dcf8f670928f87551222bb8956cd901b58a4267755bd5b9dc",
+  "symbols": {
+    "download_opener": "c2099557ed7342b4940e5cc374af05d27a6cb388f28d06f8113562b9dff3dfce",
+    "fetch": "0025e089ebfba3991f45feb21b51cbd7c4f99a1008ea7c180d0fb6f0c75823a6",
+    "stage": "9eb203695334be1839e739288ee411b3edba6e74a06fdcf7561e72e7aa948072"
+  }
+}

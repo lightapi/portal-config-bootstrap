@@ -1,5 +1,8 @@
 """Release download identity through real urllib processing and localhost I/O."""
+import ast
 import contextlib
+import hashlib
+import json
 import http.client
 import http.server
 import io
@@ -13,6 +16,47 @@ import urllib.request
 import test_portal_view_release as portable
 
 r, cli = portable.r, portable.cli
+
+
+SYMBOLS = ('download_opener', 'fetch', 'stage')
+MANIFEST = 'portal-view-download-source.json'
+
+
+def source_hashes(path):
+    nodes = {node.name: node for node in ast.parse(path.read_text()).body
+             if isinstance(node, ast.FunctionDef)}
+    result = {}
+    for name in SYMBOLS:
+        node = nodes[name]
+        if node.body and isinstance(node.body[0], ast.Expr) and isinstance(
+                node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str):
+            node.body.pop(0)  # Documentation changes do not change the contract.
+        for child in ast.walk(node):
+            child._fields = tuple(field for field in child._fields if field != 'type_params')
+        result[name] = hashlib.sha256(ast.dump(node).encode()).hexdigest()
+    return result
+
+
+@contextlib.contextmanager
+def identity_environment(identity, **values):
+    # Keep PATH and other tooling settings, but isolate network proxy routing.
+    with patch.dict(os.environ, values):
+        for name in list(os.environ):
+            if name.lower().endswith('_proxy'):
+                os.environ.pop(name)
+        os.environ.pop('PORTAL_VIEW_USER_AGENT', None)
+        if identity is not None:
+            os.environ['PORTAL_VIEW_USER_AGENT'] = identity
+        yield
+
+
+class SourceContract:
+    def test_download_source_matches_canonical_manifest(self):
+        scripts = Path(__file__).parent
+        manifest = json.loads((scripts / MANIFEST).read_text())
+        self.assertEqual(source_hashes(scripts / 'portal_view_release.py'), manifest['symbols'])
+        self.assertEqual(hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                         manifest['fixtureSha256'])
 
 
 class DownloadFixture(unittest.TestCase):
@@ -81,14 +125,9 @@ class StageContract:
             self.observed.clear()
             env = {'LIGHT_PORTAL_VERSION': '2.6.0',
                    'LIGHT_PORTAL_ASSET_BASE_URL': self.origin,
-                   'LIGHT_PORTAL_RELEASE_BASE_URL': self.origin + '/light-portal/releases',
-                   'PORTAL_VIEW_USER_AGENT': identity or ''}
-            if identity is None:
-                env.pop('PORTAL_VIEW_USER_AGENT')
-            with patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()), \
+                   'LIGHT_PORTAL_RELEASE_BASE_URL': self.origin + '/light-portal/releases'}
+            with identity_environment(identity, **env), contextlib.redirect_stdout(io.StringIO()), \
                     patch.object(r, 'download_opener', wraps=r.download_opener) as opened:
-                if identity is None:
-                    os.environ.pop('PORTAL_VIEW_USER_AGENT', None)
                 self.assertEqual(cli.main(['stage', '--version', portable.A]), 0)
             self.assertEqual(opened.call_count, 1)
             self.assert_identity(identity or 'portal-view-release/1.0', 3)
@@ -103,9 +142,8 @@ class StageContract:
             untouched = self.fixture.base / 'untouched-release-root'
             env = {'LIGHT_PORTAL_VERSION': '2.6.0',
                    'LIGHT_PORTAL_ASSET_BASE_URL': self.origin,
-                   'LIGHT_PORTAL_RELEASE_BASE_URL': self.origin,
-                   'PORTAL_VIEW_USER_AGENT': identity}
-            with self.subTest(identity=identity), patch.dict(os.environ, env), \
+                   'LIGHT_PORTAL_RELEASE_BASE_URL': self.origin}
+            with self.subTest(identity=identity), identity_environment(identity, **env), \
                     patch.object(cli, 'ROOT', untouched), \
                     contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(cli.main(['stage', '--version', portable.A]), 2)
@@ -113,7 +151,7 @@ class StageContract:
             self.assertEqual(self.observed, [])
 
     def test_local_stage_does_not_require_download_identity(self):
-        with patch.dict(os.environ, {'PORTAL_VIEW_USER_AGENT': 'invalid\nidentity'}), \
+        with identity_environment('invalid\nidentity'), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.main(['stage', '--version', portable.A,
                                        '--from-dir', str(self.folder)]), 0)
@@ -124,11 +162,7 @@ class PrepareContract:
     def test_prepare_downloads_default_and_overridden_identity(self):
         for identity in (None, '', 'customer-release/2.0'):
             self.observed.clear()
-            with patch.dict(os.environ, {}), contextlib.redirect_stdout(io.StringIO()):
-                if identity is None:
-                    os.environ.pop('PORTAL_VIEW_USER_AGENT', None)
-                else:
-                    os.environ['PORTAL_VIEW_USER_AGENT'] = identity
+            with identity_environment(identity), contextlib.redirect_stdout(io.StringIO()):
                 cli.prepare('latest', self.origin, lambda _: self.fake)
             self.assert_identity(identity or 'portal-view-release/1.0', 5)
             self.assertEqual(self.observed[0][0], '/latest/portal-view/release-pointer.env')
@@ -147,7 +181,7 @@ class PrepareContract:
 
     def test_invalid_prepare_identity_has_no_network_or_disk_effects(self):
         untouched = self.fixture.base / 'untouched-prepare-root'
-        with patch.dict(os.environ, {'PORTAL_VIEW_USER_AGENT': 'invalid\nidentity'}), \
+        with identity_environment('invalid\nidentity'), \
                 patch.object(cli, 'ROOT', untouched):
             with self.assertRaises(r.ActivationError):
                 cli.prepare('latest', self.origin, lambda _: self.fake)
@@ -159,11 +193,7 @@ class ResolveContract:
     def test_installer_resolve_download_identity(self):
         for identity in (None, '', 'customer-release/2.0'):
             self.observed.clear()
-            with patch.dict(os.environ, {}), contextlib.redirect_stdout(io.StringIO()) as output:
-                if identity is None:
-                    os.environ.pop('PORTAL_VIEW_USER_AGENT', None)
-                else:
-                    os.environ['PORTAL_VIEW_USER_AGENT'] = identity
+            with identity_environment(identity), contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(cli.main(['resolve', '--release-base', self.origin]), 0)
             self.assertEqual(output.getvalue().strip(), '2.6.0')
             self.assert_identity(identity or 'portal-view-release/1.0', 1)
