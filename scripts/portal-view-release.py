@@ -164,7 +164,13 @@ class RealRunner:
         if result.returncode == 0:
             return
         # Do not convert daemon/auth/transport failures into image absence.
-        release.require('no such image' in result.stderr.lower(), 'cannot inspect target gateway image')
+        detail = result.stderr.strip()
+        podman_missing = result.returncode == 125 and re.search(
+            r'^Error: [^\r\n]+: image not known\s*$', detail, re.I | re.M)
+        missing = 'no such image' in detail.lower() or podman_missing
+        release.require(missing, 'cannot inspect target gateway image ' + self.image
+                        + ' (exit ' + str(result.returncode) + ')'
+                        + (': ' + detail[-400:] if detail else ''))
         self.run(['docker', 'pull', self.image], timeout=600)
         self.run(['docker', 'image', 'inspect', self.image])
 

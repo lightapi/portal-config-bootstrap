@@ -259,10 +259,34 @@ class AdapterTests(unittest.TestCase):
         self.execute.return_value = subprocess.CompletedProcess([], 0, '', '')
         runner.ensure_image()
         self.assertEqual([c.args[0] for c in self.execute.call_args_list], [['docker', 'image', 'inspect', 'configured:test']])
-        self.execute.reset_mock()
-        self.execute.side_effect = [subprocess.CompletedProcess([], 1, '', 'Error: No such image: configured:test'), subprocess.CompletedProcess([], 0, '', ''), subprocess.CompletedProcess([], 0, '', '')]
-        runner.ensure_image()
-        self.assertEqual([c.args[0] for c in self.execute.call_args_list], [['docker', 'image', 'inspect', 'configured:test'], ['docker', 'pull', 'configured:test'], ['docker', 'image', 'inspect', 'configured:test']])
+        for code, error in ((1, 'Error: No such image: configured:test'),
+                            (125, 'Error: configured:test: image not known\n')):
+            with self.subTest(code=code, error=error):
+                self.execute.reset_mock()
+                self.execute.side_effect = [subprocess.CompletedProcess([], code, '', error),
+                                           subprocess.CompletedProcess([], 0, '', ''),
+                                           subprocess.CompletedProcess([], 0, '', '')]
+                runner.ensure_image()
+                self.assertEqual([c.args[0] for c in self.execute.call_args_list],
+                                 [['docker', 'image', 'inspect', 'configured:test'],
+                                  ['docker', 'pull', 'configured:test'],
+                                  ['docker', 'image', 'inspect', 'configured:test']])
+
+    def test_podman_inspection_errors_include_details_without_pulling(self):
+        runner = self.runner()
+        for error in ('Error: opening image storage: permission denied',
+                      'Error: cannot connect to Podman socket',
+                      'Error: database configuration mismatch',
+                      'unclassified engine failure'):
+            with self.subTest(error=error):
+                self.execute.reset_mock()
+                self.execute.return_value = subprocess.CompletedProcess([], 125, '', error)
+                with self.assertRaises(r.ActivationError) as raised:
+                    runner.ensure_image()
+                self.assertIn('configured:test (exit 125)', str(raised.exception))
+                self.assertIn(error, str(raised.exception))
+                self.assertEqual([c.args[0] for c in self.execute.call_args_list],
+                                 [['docker', 'image', 'inspect', 'configured:test']])
 
     def test_pull_failure_and_daemon_error_stop_before_validation(self):
         runner = self.runner()
