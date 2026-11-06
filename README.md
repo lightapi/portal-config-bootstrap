@@ -263,6 +263,34 @@ python3 -B scripts/portal-view-release.py image-env
 For direct Compose use, pass the selected environment file with `--env-file`.
 Use the existing deployment entry point for the complete environment and startup
 ordering; updating source files does not restart already-created containers.
+
+### Podman CLI adapter
+
+On Podman hosts, select the versioned adapter from this checkout before running
+bootstrap scripts. This replaces a minimal `docker` shim that only forwards
+arguments and loses earlier environment files with older `podman-compose`.
+
+```bash
+export PATH="$PWD/scripts/podman-compat:$HOME/.local/bin:$PATH"
+hash -r
+command -v docker
+python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
+```
+
+The adapter forwards engine commands to `podman` and Compose commands to
+`podman-compose`. It combines ordered global `--env-file` inputs into one mode-0600
+temporary file, preserving later values and exported-variable precedence, and
+removes the temporary file after the provider exits. `config --quiet` suppresses
+rendered credentials while preserving provider errors and exit status. Service
+command arguments and stdin are passed through unchanged.
+
+This adapter is for the simple literal `KEY=value` files used by the bootstrap
+workflow. Do not use cross-file interpolation or multiline dotenv values with
+it; those require a Compose provider qualified for native ordered env-file
+semantics. The release runner already falls back to YAML when the provider
+does not implement `config --format json`. Reapply the PATH selection in each
+deployment shell (or in its existing startup configuration).
+
 ## Signed Portal View packages
 
 Portal View is built once by the release publisher. Deployment configuration lives

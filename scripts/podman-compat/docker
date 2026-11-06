@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Docker CLI spelling for the Podman operations used by bootstrap scripts.
+set -euo pipefail
+
+if [[ "${1:-}" != compose ]]; then
+  exec podman "$@"
+fi
+shift
+
+args=()
+env_files=()
+subcommand=''
+while (($#)); do
+  case "$1" in
+    --env-file)
+      (($# >= 2)) || { echo 'missing --env-file argument' >&2; exit 2; }
+      env_files+=("$2")
+      shift 2
+      ;;
+    --env-file=*)
+      env_files+=("${1#*=}")
+      shift
+      ;;
+    -f|--file|-p|--project-name|--project-directory|--profile|--ansi|--progress|--parallel)
+      (($# >= 2)) || { echo "missing $1 argument" >&2; exit 2; }
+      args+=("$1" "$2")
+      shift 2
+      ;;
+    -*)
+      args+=("$1")
+      shift
+      ;;
+    *)
+      subcommand="$1"
+      args+=("$1")
+      shift
+      break
+      ;;
+  esac
+done
+
+quiet=false
+if [[ "$subcommand" == config ]]; then
+  for argument in "$@"; do
+    case "$argument" in
+      --quiet|-q) quiet=true ;;
+      *) args+=("$argument") ;;
+    esac
+  done
+else
+  # Never reinterpret a service command's arguments as Compose options.
+  args+=("$@")
+fi
+
+env_tmp=''
+cleanup() {
+  [[ -z "$env_tmp" ]] || rm -f -- "$env_tmp"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if ((${#env_files[@]})); then
+  umask 077
+  env_tmp="$(mktemp "${TMPDIR:-/tmp}/portal-podman-env.XXXXXX")"
+  for env_file in "${env_files[@]}"; do
+    [[ -f "$env_file" ]] || { echo "missing environment file: $env_file" >&2; exit 2; }
+    cat -- "$env_file" >> "$env_tmp"
+    printf '\n' >> "$env_tmp"
+  done
+  args=(--env-file "$env_tmp" "${args[@]}")
+fi
+
+if [[ "$quiet" == true ]]; then
+  podman-compose "${args[@]}" >/dev/null
+else
+  podman-compose "${args[@]}"
+fi
