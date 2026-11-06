@@ -327,13 +327,90 @@ def resolve_source(base, enclosing, transport):
     return source
 
 
-def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None):
-    """Resolve and prepare a verified signed package; missing publication fails closed."""
-    release.component(enclosing)
-    base = release_base or os.environ.get('LIGHT_PORTAL_RELEASE_BASE_URL', os.environ.get('LIGHT_PORTAL_ASSET_BASE_URL', 'https://cdn.networknt.com').rstrip('/') + '/light-portal/releases')
+def configured_release_base(override=None):
+    base = override or os.environ.get('LIGHT_PORTAL_RELEASE_BASE_URL', os.environ.get('LIGHT_PORTAL_ASSET_BASE_URL', 'https://cdn.networknt.com').rstrip('/') + '/light-portal/releases')
     parsed = urllib.parse.urlsplit(base)
     release.require(parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password
                     and not parsed.query and not parsed.fragment, 'release base must be HTTPS without credentials/query/fragment')
+    return base
+
+
+def validate_image_env(data):
+    """Release metadata is image references only, never shell or Compose controls."""
+    release.require(len(data) <= 65536, 'release image environment exceeds 64 KiB')
+    try:
+        lines = data.decode('ascii').splitlines()
+    except UnicodeError as error:
+        raise release.ActivationError('release image environment must be ASCII') from error
+    values = {}
+    for number, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        key, separator, value = line.partition('=')
+        release.require(separator and re.fullmatch(r'[A-Z][A-Z0-9_]*_IMAGE', key),
+                        'invalid release image environment key at line ' + str(number))
+        release.require(key not in values, 'duplicate release image environment key at line ' + str(number))
+        release.require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/:@-]*', value),
+                        'invalid release image reference at line ' + str(number))
+        if '@' in value:
+            valid = re.fullmatch(r'[^@]+@sha256:[0-9a-f]{64}', value)
+        else:
+            valid = re.fullmatch(r'[^:]+:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', value.rsplit('/', 1)[-1])
+        release.require(valid, 'release image reference must have a tag or sha256 digest at line ' + str(number))
+        values[key] = value
+    release.require(all(values.get(key) for key in ('PORTAL_HYBRID_COMMAND_IMAGE', 'PORTAL_HYBRID_QUERY_IMAGE')),
+                    'release image environment must select both packaged Portal hybrid images')
+
+
+def ensure_image_env(source, transport):
+    """Acquire missing image metadata from the already resolved enclosing release."""
+    target = BASE / 'docker-images.env'
+    if os.path.lexists(target):
+        release.regular(target)
+        return target
+    url = source.rsplit('/', 1)[0] + '/docker-images.env'
+    try:
+        with transport.open(url, timeout=60) as response:
+            release.require(response.status == 200, 'release image environment did not return HTTP 200')
+            data = response.read(65537)
+    except urllib.error.HTTPError as error:
+        raise release.ActivationError('release image environment download failed: HTTP ' + str(error.code)) from error
+    validate_image_env(data)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix='.docker-images-', suffix='.tmp', dir=BASE, delete=False) as output:
+            temporary = Path(output.name)
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            # Atomic publication without replacing a file another operator just created.
+            os.link(temporary, target)
+        except FileExistsError:
+            release.regular(target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    print('PORTAL_VIEW_RELEASE: release image environment available at ' + str(target))
+    return target
+
+
+def image_env(enclosing, release_base=None, opener=None):
+    release.component(enclosing)
+    base = configured_release_base(release_base)
+    target = BASE / 'docker-images.env'
+    if os.path.lexists(target):
+        return release.regular(target)
+    transport = opener if opener is not None else release.download_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    source = resolve_source(base, enclosing, transport)
+    return ensure_image_env(source, transport)
+
+
+def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None):
+    """Resolve and prepare a verified signed package; missing publication fails closed."""
+    release.component(enclosing)
+    base = configured_release_base(release_base)
     transport = opener if opener is not None else release.download_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
         source = resolve_source(base, enclosing, transport)
@@ -354,6 +431,8 @@ def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None
             shutil.copyfileobj(response, output)
     release.stage(source, version, ROOT, CONFIG / 'portal-view-release-keys', downloader=download)
     try:
+        if MODE == 'bootstrap':
+            ensure_image_env(source, transport)
         real = runner_factory(None)
         real.ensure_image()
     except Exception:
@@ -424,6 +503,9 @@ def parser():
     prep = commands.add_parser('prepare')
     prep.add_argument('--enclosing-version', default=os.environ.get('LIGHT_PORTAL_VERSION', 'latest'))
     prep.add_argument('--release-base')
+    images = commands.add_parser('image-env', help='download missing release image selections without running Compose')
+    images.add_argument('--enclosing-version', default=os.environ.get('LIGHT_PORTAL_VERSION', 'latest'))
+    images.add_argument('--release-base')
     legacy = commands.add_parser('legacy-dist')
     legacy.add_argument('--archive', required=True, type=Path)
     legacy.add_argument('--root', required=True, type=Path)
@@ -466,7 +548,9 @@ def main(argv=None, runner_factory=RealRunner):
         args = parser().parse_args(argv)
         if args.service == 'portal-bff-sso':
             select_sso()
-        if args.command == 'prepare':
+        if args.command == 'image-env':
+            image_env(args.enclosing_version, args.release_base)
+        elif args.command == 'prepare':
             prepare(args.enclosing_version, args.release_base, runner_factory)
         elif args.command == 'legacy-dist':
             legacy_dist(args.archive, args.root)

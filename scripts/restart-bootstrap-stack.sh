@@ -73,6 +73,9 @@ compose=(docker compose -f "$repo_dir/docker-compose.yml" -f "$repo_dir/docker-c
 light_portal_env_file="${LIGHT_PORTAL_ENV_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/lightapi/light-portal.env}"
 bootstrap_env_file="${BOOTSTRAP_ENV_FILE:-$repo_dir/.env.bootstrap}"
 
+[[ -f "$bootstrap_env_file" ]] || die "bootstrap environment file is missing: $bootstrap_env_file (copy .env.bootstrap.example)"
+python3 -B "$script_dir/portal-view-release.py" image-env
+
 if [[ -f "$repo_dir/docker-images.env" ]]; then
   compose+=(--env-file "$repo_dir/docker-images.env")
 fi
@@ -81,11 +84,7 @@ if [[ -f "$light_portal_env_file" ]]; then
   compose+=(--env-file "$light_portal_env_file")
 fi
 
-if [[ -f "$bootstrap_env_file" ]]; then
-  compose+=(--env-file "$bootstrap_env_file")
-else
-  die "bootstrap environment file is missing: $bootstrap_env_file (copy .env.bootstrap.example)"
-fi
+compose+=(--env-file "$bootstrap_env_file")
 
 bootstrap_env_value() {
   local name="$1"

@@ -47,6 +47,11 @@ class AdapterTests(unittest.TestCase):
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.base = self.fixture.base
+        # Shared lifecycle tests use an owner-provisioned image selection file.
+        # Missing-file acquisition is exercised in test_portal_view_image_env.py.
+        (self.base / 'docker-images.env').write_text(
+            'PORTAL_HYBRID_COMMAND_IMAGE=fixture/command:packaged\n'
+            'PORTAL_HYBRID_QUERY_IMAGE=fixture/query:packaged\n')
         self.root = self.fixture.root
         self.fake = self.fixture.fake
         self.fake.ensure_image = Mock()

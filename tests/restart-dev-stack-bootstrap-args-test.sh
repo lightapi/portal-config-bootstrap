@@ -81,6 +81,18 @@ EOF
 
 chmod +x "$test_dir/bin/docker" "$test_dir/bin/curl" "$test_dir/bin/unzip"
 
+export BOOTSTRAP_TEST_REAL_PYTHON="$(command -v python3)"
+cat > "$test_dir/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${2:-}" == */portal-view-release.py && "${3:-}" == image-env ]]; then
+  # Acquisition itself has dedicated HTTP and shell-entry tests; never use CDN here.
+  exit 0
+fi
+exec "$BOOTSTRAP_TEST_REAL_PYTHON" "$@"
+EOF
+chmod +x "$test_dir/bin/python3"
+
 run_restart() {
   PATH="$test_dir/bin:$PATH" \
   BOOTSTRAP_TEST_CAPTURE="$1" \

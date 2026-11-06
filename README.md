@@ -237,6 +237,29 @@ that depended on host JARs are unsuitable. Compose requires both selections and
 mounts configuration directories only; there are no host service-JAR folders.
 Asset synchronization retains UI assets and does not download hybrid ZIPs.
 
+Bootstrap acquires a missing `docker-images.env` automatically before rendering
+Compose configuration. This applies to direct Portal View `prepare`, the default
+signed `sync-assets.sh` flow, `validate-bootstrap.sh`, and `restart-bootstrap-stack.sh`.
+The publisher generates this file; it is intentionally excluded from Git.
+
+Preparation downloads image selections from the same resolved enclosing release
+as the signed UI: `<release-base>/<version>/docker-images.env`. Startup and
+validation resolve `LIGHT_PORTAL_VERSION` (default `latest`) through the same
+release pointer when the file is absent. The download uses the configured release
+base and User-Agent, accepts only image-reference assignments with both packaged
+hybrid selections, and publishes the complete file atomically. Failed or malformed
+downloads stop before Compose, image pulls, or container operations. These checks
+validate image metadata syntax; they do not authenticate it as a signed artifact.
+
+An existing regular file is retained byte for byte, so owner-provisioned image
+pins also work offline. Compose loads the release file before the private
+`LIGHT_PORTAL_ENV_FILE` and `.env.bootstrap`; existing override precedence is kept.
+To acquire only the missing image metadata without running Compose:
+
+```bash
+python3 -B scripts/portal-view-release.py image-env
+```
+
 For direct Compose use, pass the selected environment file with `--env-file`.
 Use the existing deployment entry point for the complete environment and startup
 ordering; updating source files does not restart already-created containers.
