@@ -304,6 +304,15 @@ staging creates directories, and one transport serves each stage batch.
 Injected preparation transports retain their headers. Signature verification
 and gateway readback requests are unchanged.
 
+Release downloads use Python's standard proxy configuration, including
+`https_proxy` / `HTTPS_PROXY` and `no_proxy` / `NO_PROXY`. Set the approved proxy
+in the same shell that invokes the scripts when direct Internet access is
+unavailable. The release pointer, signed metadata/package members, and missing
+`docker-images.env` acquisition use this routing. Redirects remain refused and
+TLS certificate verification remains enabled. Gateway serving readback keeps
+its separate direct connection and configured CA trust; it does not use the
+release-download proxy.
+
 Reading the gateway image and published port works with Docker Compose and with
 podman-compose, which has no `config --format json` and may run without PyYAML:
 when the JSON form is refused, the runner reads the YAML `config` output with a

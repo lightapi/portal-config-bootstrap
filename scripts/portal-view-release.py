@@ -408,7 +408,7 @@ def image_env(enclosing, release_base=None, opener=None):
     target = BASE / 'docker-images.env'
     if os.path.lexists(target):
         return release.regular(target)
-    transport = opener if opener is not None else release.download_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    transport = opener if opener is not None else release.download_opener(NoRedirect())
     source = resolve_source(base, enclosing, transport)
     return ensure_image_env(source, transport)
 
@@ -417,7 +417,7 @@ def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None
     """Resolve and prepare a verified signed package; missing publication fails closed."""
     release.component(enclosing)
     base = configured_release_base(release_base)
-    transport = opener if opener is not None else release.download_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    transport = opener if opener is not None else release.download_opener(NoRedirect())
     try:
         source = resolve_source(base, enclosing, transport)
         with transport.open(source + '/portal-view-release.env', timeout=60) as response:
