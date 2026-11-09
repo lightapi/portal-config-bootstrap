@@ -21489,6 +21489,41 @@ COMMENT ON TABLE public.google_identity_t IS 'Projection of GoogleIdentityLinked
 
 
 --
+-- Name: COLUMN google_identity_t.google_identity_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.google_identity_t.google_identity_id IS 'Aggregate identifier of the Google identity binding.';
+
+
+--
+-- Name: COLUMN google_identity_t.issuer; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.google_identity_t.issuer IS 'Google OpenID Connect issuer of the identity binding.';
+
+
+--
+-- Name: COLUMN google_identity_t.subject; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.google_identity_t.subject IS 'Stable Google subject identifier within the issuer.';
+
+
+--
+-- Name: COLUMN google_identity_t.user_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.google_identity_t.user_id IS 'Portal user bound to this Google identity.';
+
+
+--
+-- Name: COLUMN google_identity_t.aggregate_version; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.google_identity_t.aggregate_version IS 'Latest applied Google identity aggregate event version.';
+
+
+--
 -- Name: group_col_filter_t; Type: TABLE; Schema: public; Owner: -
 --
 
