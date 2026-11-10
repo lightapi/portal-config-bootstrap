@@ -316,6 +316,82 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(r.ActivationError):
                 runner.validate_offline(path, self.fixture.ctx.runtime_config, self.fixture.keys, '/', None)
 
+    def test_restrictive_umask_inputs_are_readable_before_container_validation(self):
+        previous = os.umask(0o027)
+        try:
+            path = self.fixture.stage()
+        finally:
+            os.umask(previous)
+        runtime = self.fixture.ctx.runtime_config
+        runtime.chmod(0o640)
+        self.fixture.keys.chmod(0o750)
+        key = self.fixture.keys / 'test.pem'
+        key.chmod(0o640)
+        private = self.fixture.private
+        private.chmod(0o600)
+        unrelated = self.config / 'client-secret.yml'
+        unrelated.write_text('private fixture')
+        unrelated.chmod(0o600)
+        runner = self.runner()
+        before = snapshot(self.base)
+        report = dict(status='ok', version=portable.A, capability=1,
+                      manifestDigest='a' * 64, runtimeConfigDigest='b' * 64)
+
+        def execute(args, **kwargs):
+            self.assertEqual(args[:3], ['docker', 'run', '--rm'])
+            for item in [path, *path.rglob('*')]:
+                self.assertEqual(item.stat().st_mode & 0o777, 0o555 if item.is_dir() else 0o444)
+            self.assertEqual(key.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(runtime.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(self.fixture.keys.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(private.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(unrelated.stat().st_mode & 0o777, 0o600)
+            return subprocess.CompletedProcess(args, 0, json.dumps(report), '')
+
+        self.execute.side_effect = execute
+        for _ in range(2):  # Reused stages and repeated preparation remain safe.
+            self.assertEqual(runner.validate_offline(path, runtime, self.fixture.keys, '/', None), report)
+        self.assertEqual(snapshot(self.base), before)
+
+    def test_gateway_validation_error_is_preserved(self):
+        path = self.fixture.stage()
+        runner = self.runner()
+        error = 'SPA host `offline`: runtime config: file is unreadable'
+        self.execute.return_value = subprocess.CompletedProcess(
+            [], 2, json.dumps(dict(status='error', capability=1, error=error)), '')
+        with self.assertRaisesRegex(r.ActivationError, re.escape('offline validation failed (exit 2): ' + error)):
+            runner.validate_offline(path, self.fixture.ctx.runtime_config, self.fixture.keys, '/', None)
+
+    def test_entra_placeholders_fail_before_download_or_container_work(self):
+        valid = dict(mode='entra-sso', tenantId='12345678-abcd-1234-abcd-123456789abc',
+                     clientId='87654321-abcd-1234-abcd-123456789abc')
+        for field in ('tenantId', 'clientId'):
+            for invalid in ('00000000-0000-0000-0000-000000000000',
+                            '11111111-1111-1111-1111-111111111111', 'replace-me', None):
+                with self.subTest(field=field, invalid=invalid):
+                    authentication = dict(valid, **{field: invalid})
+                    self.fixture.ctx.runtime_config.write_text(json.dumps(dict(authentication=authentication)))
+                    before = snapshot(self.base)
+                    with self.assertRaisesRegex(r.ActivationError, 'authentication.' + field):
+                        self.prepare()
+                    self.transport.open.assert_not_called()
+                    self.factory.assert_not_called()
+                    self.assertEqual(snapshot(self.base), before)
+        self.fixture.ctx.runtime_config.write_text(json.dumps(dict(authentication=valid)))
+        cli.check_runtime_configuration(self.fixture.ctx.runtime_config)
+
+    def test_unverified_release_is_not_made_public(self):
+        path = self.fixture.stage()
+        manifest = path / 'release-manifest.json'
+        manifest.chmod(0o640)
+        manifest.write_bytes(manifest.read_bytes() + b' ')
+        runner = self.runner()
+        self.execute.reset_mock()
+        with self.assertRaises(r.ActivationError):
+            runner.validate_offline(path, self.fixture.ctx.runtime_config, self.fixture.keys, '/', None)
+        self.assertEqual(manifest.stat().st_mode & 0o777, 0o640)
+        self.execute.assert_not_called()
+
     def test_readback_mandatory_head_get_and_failure_not_absent(self):
         opener = Mock()
         opener.open.return_value = response(b'', headers={'X-Portal-Release-Digest': 'a' * 64})

@@ -27,6 +27,49 @@ MODE = 'bootstrap'
 DEFAULT_READBACK = 'https://local.localhost/'
 SERVICE = 'light-gateway'
 
+
+def check_runtime_configuration(path):
+    """Report unconfigured Entra identifiers before downloads or container work."""
+    value = release.read_json(path)
+    authentication = value.get('authentication', {}) if isinstance(value, dict) else {}
+    if not isinstance(authentication, dict) or authentication.get('mode') != 'entra-sso':
+        return  # The gateway remains authoritative for the full runtime schema.
+    for field in ('tenantId', 'clientId'):
+        identifier = authentication.get(field)
+        valid = isinstance(identifier, str) and re.fullmatch(
+            r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', identifier)
+        release.require(valid and len(set(identifier.replace('-', '').lower())) > 1,
+                        str(path) + ': authentication.' + field
+                        + ' must be the registered Entra UUID, not an example placeholder; '
+                        'configure the tenant/client IDs and registered redirect URLs before prepare')
+
+
+def public_validation_inputs(release_dir, runtime_config, key_dir):
+    """Make verified public inputs readable by the container's non-root user."""
+    release_dir, key_dir = release.directory(release_dir), release.directory(key_dir)
+    # Authenticate the tree before changing permissions, including existing stages.
+    manifest = release.verify_signature(release_dir, key_dir)
+    release.verify_tree(manifest, release_dir / 'dist')
+    key = release.regular(key_dir / (manifest['signature']['keyId'] + '.pem'))
+    pem = key.read_bytes()
+    release.require(b'-----BEGIN PUBLIC KEY-----' in pem and b'PRIVATE KEY' not in pem,
+                    'trust directory accepts public keys only')
+    runtime_config = release.regular(runtime_config)
+    directories, files = [release_dir], []
+    for item in release_dir.rglob('*'):
+        if stat.S_ISDIR(item.lstat().st_mode):
+            directories.append(release.directory(item))
+        else:
+            files.append(release.regular(item))
+    permissions = [(item, 0o555) for item in directories] + [(item, 0o444) for item in files]
+    # Preserve operator write access on these public, separately mounted inputs.
+    permissions += [(key_dir, stat.S_IMODE(key_dir.stat().st_mode) | 0o555)]
+    permissions += [(item, stat.S_IMODE(item.stat().st_mode) | 0o444) for item in (key, runtime_config)]
+    for item, mode in permissions:
+        if stat.S_IMODE(item.stat().st_mode) != mode:
+            item.chmod(mode)
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise release.ActivationError('readback redirects are refused')
@@ -175,6 +218,8 @@ class RealRunner:
         self.run(['docker', 'image', 'inspect', self.image])
 
     def validate_offline(self, release_dir, runtime_config, key_dir, mount_path, handler_config):
+        check_runtime_configuration(runtime_config)
+        public_validation_inputs(release_dir, runtime_config, key_dir)
         args = ['docker', 'run', '--rm', '--network', 'none', '--pull', 'never']
         mounts = [(release.directory(release_dir), '/release'),
                   (release.regular(runtime_config), '/runtime/portal-config.json'),
@@ -195,7 +240,14 @@ class RealRunner:
         except (ValueError, TypeError) as error:
             raise release.ActivationError('gateway image does not support validate-portal-release or returned invalid JSON') from error
         release.require(isinstance(report, dict), 'invalid offline validation result')
-        release.require(result.returncode == 0 and report.get('status') == 'ok', 'offline validation failed')
+        if result.returncode != 0 or report.get('status') != 'ok':
+            detail = report.get('error')
+            if not isinstance(detail, str) or not detail:
+                detail = 'gateway returned status ' + repr(report.get('status'))
+            # Bound and flatten gateway diagnostics; do not dump config or environment.
+            detail = ' '.join(detail.split())[:2000]
+            raise release.ActivationError('offline validation failed (exit '
+                                          + str(result.returncode) + '): ' + detail)
         release.require(type(report.get('capability')) is int and report['capability'] >= 1
                         and isinstance(report.get('version'), str)
                         and isinstance(report.get('manifestDigest'), str)
@@ -416,6 +468,7 @@ def image_env(enclosing, release_base=None, opener=None):
 def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None):
     """Resolve and prepare a verified signed package; missing publication fails closed."""
     release.component(enclosing)
+    check_runtime_configuration(CONFIG / 'portal-config.json')
     base = configured_release_base(release_base)
     transport = opener if opener is not None else release.download_opener(NoRedirect())
     try:

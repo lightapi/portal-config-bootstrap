@@ -87,12 +87,23 @@ being switched globally when testing OAuth and SSO side by side.
 
    Edit `portal-config.json` with the registered Entra tenant/client UUIDs and
    redirect/logout URLs. Keep tenant/client values consistent with `.env.bootstrap`.
+   The all-zero example UUIDs are deliberately unusable; `prepare` reports the
+   field that needs configuration before downloading. This browser-visible file
+   must not contain client secrets.
    Provision approved public release keys in
    `portal-bff-sso/config/portal-view-release-keys/<keyId>.pem`, then run:
 
    ```bash
    python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
    ```
+
+   Before offline validation, the CLI makes the verified public release tree
+   read-only and readable by the gateway user (directories `0555`, files `0444`).
+   It also adds read access to the selected release-signing public key and
+   `portal-config.json`, plus traversal access to the public key directory.
+   This repairs existing stages created under restrictive umasks such as `0027`;
+   it does not change the host umask, private keys, `.env.bootstrap`, or unrelated
+   configuration files. Gateway validation failures include the actual error detail.
 
    This downloads and verifies the shared package and validates the exact SSO
    image offline. No customer-specific build is needed. On a fresh setup, publish the signed
