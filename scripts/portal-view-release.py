@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Repository signed release command. Importing this module performs no effects."""
 import argparse
+import contextlib
+import unicodedata
 import http.client
 import json
 import os
@@ -26,6 +28,62 @@ CONFIG = BASE / 'light-gateway-rust/config'
 MODE = 'bootstrap'
 DEFAULT_READBACK = 'https://local.localhost/'
 SERVICE = 'light-gateway'
+
+
+def check_runtime_configuration(path):
+    """Report unconfigured Entra identifiers before downloads or container work."""
+    value = release.read_json(path)
+    authentication = value.get('authentication', {}) if isinstance(value, dict) else {}
+    if not isinstance(authentication, dict) or authentication.get('mode') != 'entra-sso':
+        return  # The gateway remains authoritative for the full runtime schema.
+    for field in ('tenantId', 'clientId'):
+        identifier = authentication.get(field)
+        valid = isinstance(identifier, str) and re.fullmatch(
+            r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', identifier)
+        release.require(valid and len(set(identifier.replace('-', '').lower())) > 1,
+                        str(path) + ': authentication.' + field
+                        + ' must be the registered Entra UUID, not an example placeholder; '
+                        'configure the tenant/client IDs and registered redirect URLs before prepare')
+
+
+def diagnostic_detail(value):
+    """Bound diagnostics and remove terminal control/format characters."""
+    if not isinstance(value, str):
+        value = json.dumps(value, ensure_ascii=True, sort_keys=True)
+    value = ''.join(' ' if unicodedata.category(char).startswith('C') else char for char in value)
+    return ' '.join(value.split())[:2000]
+
+
+@contextlib.contextmanager
+def validation_snapshot(release_dir, runtime_config, key_dir, handler_config):
+    """Private disposable copies; never chmod or relabel operator-owned inputs.
+
+    candidate() has already authenticated the release and selected public key.
+    The gateway independently verifies these exact copied bytes as well.
+    """
+    manifest = release.manifest_at(release_dir)
+    key_name = manifest['signature']['keyId'] + '.pem'
+    release.component(key_name)
+    with tempfile.TemporaryDirectory(prefix='portal-view-validation-') as temporary:
+        parent = Path(temporary)  # 0700, even under a permissive host umask.
+        snapshot = parent / 'inputs'
+        destinations = [(release.regular(runtime_config), Path('runtime/portal-config.json')),
+                        (release.regular(key_dir / key_name), Path('keys') / key_name)]
+        destinations += [(release.regular(release_dir / name), Path('release') / name)
+                         for name in ('release-manifest.json', 'release-manifest.sig')]
+        destinations += [(release.regular(release_dir / 'dist' / name), Path('release/dist') / name)
+                         for name in release.members(manifest)]
+        if handler_config is not None:
+            destinations.append((release.regular(handler_config), Path('runtime/handler.yml')))
+        for source, relative in destinations:
+            destination = snapshot / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            destination.chmod(0o444)
+        for directory, _, _ in os.walk(snapshot):
+            Path(directory).chmod(0o755)
+        yield snapshot
+
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -175,27 +233,32 @@ class RealRunner:
         self.run(['docker', 'image', 'inspect', self.image])
 
     def validate_offline(self, release_dir, runtime_config, key_dir, mount_path, handler_config):
-        args = ['docker', 'run', '--rm', '--network', 'none', '--pull', 'never']
-        mounts = [(release.directory(release_dir), '/release'),
-                  (release.regular(runtime_config), '/runtime/portal-config.json'),
-                  (release.directory(key_dir), '/keys')]
-        if handler_config is not None:
-            mounts.append((release.regular(handler_config), '/runtime/handler.yml'))
-        for source, destination in mounts:
-            release.require(',' not in str(source), 'comma in Docker bind source')
-            args += ['--mount', 'type=bind,src=' + str(source.resolve()) + ',dst=' + destination + ',readonly']
-        args += [self.image, '/app/light-gateway', 'validate-portal-release',
-                 '--release-dir', '/release', '--runtime-config', '/runtime/portal-config.json',
-                 '--key-dir', '/keys', '--mount-path', mount_path]
-        if handler_config is not None:
-            args += ['--handler-config', '/runtime/handler.yml']
-        result = self.run(args, check=False)
+        with validation_snapshot(release_dir, runtime_config, key_dir, handler_config) as snapshot:
+            # Relabel only disposable copies, never the live serving mount.
+            args = ['docker', 'run', '--rm', '--network', 'none', '--pull', 'never',
+                    '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+                    '--volume', str(snapshot) + ':/inputs:ro,Z',
+                    self.image, '/app/light-gateway', 'validate-portal-release',
+                    '--release-dir', '/inputs/release',
+                    '--runtime-config', '/inputs/runtime/portal-config.json',
+                    '--key-dir', '/inputs/keys', '--mount-path', mount_path]
+            if handler_config is not None:
+                args += ['--handler-config', '/inputs/runtime/handler.yml']
+            result = self.run(args, check=False)
         try:
             report = json.loads(result.stdout)
         except (ValueError, TypeError) as error:
-            raise release.ActivationError('gateway image does not support validate-portal-release or returned invalid JSON') from error
-        release.require(isinstance(report, dict), 'invalid offline validation result')
-        release.require(result.returncode == 0 and report.get('status') == 'ok', 'offline validation failed')
+            detail = diagnostic_detail(result.stderr or result.stdout or 'no container output')
+            raise release.ActivationError('offline validator did not return JSON (exit '
+                                          + str(result.returncode) + '): ' + detail) from error
+        release.require(isinstance(report, dict), 'invalid offline validation result (exit '
+                        + str(result.returncode) + '): ' + diagnostic_detail(report))
+        if result.returncode != 0 or report.get('status') != 'ok':
+            detail = diagnostic_detail(report.get('error', report))
+            stderr = diagnostic_detail(result.stderr or '')
+            raise release.ActivationError('offline validation failed (exit '
+                                          + str(result.returncode) + '): ' + detail
+                                          + (': ' + stderr if stderr else ''))
         release.require(type(report.get('capability')) is int and report['capability'] >= 1
                         and isinstance(report.get('version'), str)
                         and isinstance(report.get('manifestDigest'), str)
@@ -291,6 +354,12 @@ def legacy_dist(archive_path, root):
             # Paths and types are checked before extraction; payload bytes stay intact.
             archive.extractall(owned)
         release.regular(owned / 'dist/index.html')
+        # The extracted, type/path-checked legacy assets are public browser files.
+        for parent, _, files in os.walk(owned / 'dist'):
+            Path(parent).chmod(0o755)
+            for name in files:
+                release.regular(Path(parent) / name).chmod(0o644)
+        root.chmod(stat.S_IMODE(root.stat().st_mode) | 0o111)
         had_dist = os.path.lexists(destination)
         if had_dist:
             os.replace(destination, owned / 'previous-dist')
@@ -416,6 +485,7 @@ def image_env(enclosing, release_base=None, opener=None):
 def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None):
     """Resolve and prepare a verified signed package; missing publication fails closed."""
     release.component(enclosing)
+    check_runtime_configuration(CONFIG / 'portal-config.json')
     base = configured_release_base(release_base)
     transport = opener if opener is not None else release.download_opener(NoRedirect())
     try:

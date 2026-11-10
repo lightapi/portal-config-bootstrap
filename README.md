@@ -87,12 +87,35 @@ being switched globally when testing OAuth and SSO side by side.
 
    Edit `portal-config.json` with the registered Entra tenant/client UUIDs and
    redirect/logout URLs. Keep tenant/client values consistent with `.env.bootstrap`.
+   The all-zero example UUIDs are deliberately unusable; `prepare` reports the
+   field that needs configuration before downloading. This browser-visible file
+   must not contain client secrets.
    Provision approved public release keys in
    `portal-bff-sso/config/portal-view-release-keys/<keyId>.pem`, then run:
 
    ```bash
    python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
    ```
+
+   Signed staging publishes verified browser assets with directories `0555` and
+   files `0444`, independently of the host umask. Re-staging repairs those known
+   public paths in existing releases; unrelated entries are not changed. Legacy
+   asset extraction uses public directories `0755` and files `0644`.
+
+   Offline validation copies only manifest-listed assets, signed metadata, the
+   selected public key, runtime JSON and optional handler config into a disposable
+   snapshot under a private `0700` parent. The non-root, network-isolated container
+   receives that snapshot read-only with a private SELinux relabel (`:ro,Z`).
+   Original configuration, key permissions and serving SELinux labels are not
+   changed, including on failure. Provision the serving container's intended
+   read access to public runtime JSON and public signing keys separately; for
+   example use `install -m 0644` for these public files and `0755` for the public
+   key directory. Never apply these permissions to private keys or secrets.
+
+   Gateway JSON error details (including structured errors), container exit codes,
+   and startup stderr are included in bounded diagnostics with terminal control
+   characters removed. The Entra placeholder preflight runs only for `prepare`;
+   lifecycle validation remains governed by the gateway itself.
 
    This downloads and verifies the shared package and validates the exact SSO
    image offline. No customer-specific build is needed. On a fresh setup, publish the signed

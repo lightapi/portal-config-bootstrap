@@ -2,10 +2,13 @@
   "canonicalCommit": "39d0930e19683ca451260498fea9eef6d77ae835",
   "canonicalSource": "lightapi/portal-config-loc/scripts/portal_view_release.py",
   "fixtureSha256": "06bac1eb25a0117e2f3242df5dd912314ddd0500e13a6801be2dd66ff4ee3e40",
+  "localAdaptations": {
+    "stage": "Explicit public staging permissions and repair of previously verified stages; bootstrap PR #27."
+  },
   "sourceSchemaSha256": "40b7708fe72f38002e5fc55048471a10d020c4bbbbeec3f87644984070ce9258",
   "symbols": {
     "download_opener": "19421b7cb90de201bf75cd70794ec9fb4b809013e063c3ddaf5a5f7242d7accf",
     "fetch": "6ab1d2ff27ac72983f469ac5d2dd0190259fa308c99d57798d582f119cdea4cd",
-    "stage": "d61e7b1b24ec1207d5e7375ef936c8781fa43c388fcbaadfc0d23fd51a3534bf"
+    "stage": "5bcf983eb6c0efb979604dbe0d199b21787d79eb34fa7bd04fe8ab410b67485d"
   }
 }
