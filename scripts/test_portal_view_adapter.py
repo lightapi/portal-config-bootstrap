@@ -308,9 +308,11 @@ class AdapterTests(unittest.TestCase):
         args = self.execute.call_args.args[0]
         self.assertEqual(args[:7], ['docker', 'run', '--rm', '--network', 'none', '--pull', 'never'])
         self.assertIn('configured:test', args)
-        mounts = [args[i + 1] for i, value in enumerate(args) if value == '--mount']
-        self.assertEqual(len(mounts), 3)
-        self.assertTrue(all(value.endswith(',readonly') for value in mounts))
+        volume = args[args.index('--volume') + 1]
+        self.assertTrue(volume.endswith(':/inputs:ro,Z'))
+        self.assertFalse(Path(volume.split(':/inputs:')[0]).exists())
+        self.assertIn('--read-only', args)
+        self.assertIn('--cap-drop=ALL', args)
         for code, output in [(0, '{}'), (0, '[]'), (0, '{bad'), (1, json.dumps(report)), (2, 'unknown subcommand')]:
             self.execute.return_value = subprocess.CompletedProcess([], code, output, '')
             with self.assertRaises(r.ActivationError):
@@ -323,35 +325,56 @@ class AdapterTests(unittest.TestCase):
         finally:
             os.umask(previous)
         runtime = self.fixture.ctx.runtime_config
-        runtime.chmod(0o640)
+        runtime.write_text('{"authentication":{"mode":"entra-sso","clientSecret":"must-stay-private"}}')
+        runtime.chmod(0o600)
         self.fixture.keys.chmod(0o750)
         key = self.fixture.keys / 'test.pem'
         key.chmod(0o640)
+        handler = self.config / 'handler.yml'
+        handler.write_text('handlers: []')
+        handler.chmod(0o600)
         private = self.fixture.private
         private.chmod(0o600)
-        unrelated = self.config / 'client-secret.yml'
-        unrelated.write_text('private fixture')
+        # These are INSIDE the formerly chmod-walked release/key trees.
+        path.chmod(0o755)
+        stray = path / '.secret'
+        stray.write_text('not a release member')
+        stray.chmod(0o600)
+        path.chmod(0o550)
+        unrelated = self.fixture.keys / 'private.pem'
+        unrelated.write_text('not the selected public key')
         unrelated.chmod(0o600)
         runner = self.runner()
         before = snapshot(self.base)
-        report = dict(status='ok', version=portable.A, capability=1,
-                      manifestDigest='a' * 64, runtimeConfigDigest='b' * 64)
+        modes = {item: item.stat().st_mode for item in (path, runtime, key, handler, private, stray, unrelated, self.fixture.keys)}
+        observed = []
 
         def execute(args, **kwargs):
             self.assertEqual(args[:3], ['docker', 'run', '--rm'])
-            for item in [path, *path.rglob('*')]:
-                self.assertEqual(item.stat().st_mode & 0o777, 0o555 if item.is_dir() else 0o444)
-            self.assertEqual(key.stat().st_mode & 0o777, 0o644)
-            self.assertEqual(runtime.stat().st_mode & 0o777, 0o644)
-            self.assertEqual(self.fixture.keys.stat().st_mode & 0o777, 0o755)
-            self.assertEqual(private.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(unrelated.stat().st_mode & 0o777, 0o600)
-            return subprocess.CompletedProcess(args, 0, json.dumps(report), '')
+            volume = args[args.index('--volume') + 1]
+            self.assertTrue(volume.endswith(':/inputs:ro,Z'))
+            copied = Path(volume.split(':/inputs:')[0])
+            observed.append(copied)
+            self.assertEqual(copied.parent.stat().st_mode & 0o777, 0o700)
+            for item in copied.rglob('*'):
+                self.assertEqual(item.stat().st_mode & 0o777, 0o755 if item.is_dir() else 0o444)
+            self.assertEqual((copied / 'runtime/portal-config.json').read_bytes(), runtime.read_bytes())
+            self.assertEqual((copied / 'runtime/handler.yml').read_bytes(), handler.read_bytes())
+            self.assertEqual((copied / 'keys/test.pem').read_bytes(), key.read_bytes())
+            self.assertFalse((copied / 'keys/private.pem').exists())
+            self.assertFalse((copied / 'release/.secret').exists())
+            self.assertIn('/inputs/runtime/handler.yml', args)
+            self.assertEqual({item: item.stat().st_mode for item in modes}, modes)
+            return subprocess.CompletedProcess(args, 2, json.dumps(dict(status='error', error='unknown clientSecret')), '')
 
         self.execute.side_effect = execute
-        for _ in range(2):  # Reused stages and repeated preparation remain safe.
-            self.assertEqual(runner.validate_offline(path, runtime, self.fixture.keys, '/', None), report)
+        for _ in range(2):
+            with self.assertRaisesRegex(r.ActivationError, 'unknown clientSecret'):
+                runner.validate_offline(path, runtime, self.fixture.keys, '/', handler)
+        self.assertTrue(all(not copied.parent.exists() for copied in observed))
         self.assertEqual(snapshot(self.base), before)
+        self.assertEqual({item: item.stat().st_mode for item in modes}, modes)
+
 
     def test_gateway_validation_error_is_preserved(self):
         path = self.fixture.stage()
@@ -381,16 +404,78 @@ class AdapterTests(unittest.TestCase):
         cli.check_runtime_configuration(self.fixture.ctx.runtime_config)
 
     def test_unverified_release_is_not_made_public(self):
-        path = self.fixture.stage()
+        source = self.fixture.fixture()
+        path = r.stage(source, portable.A, self.root, self.fixture.keys)
         manifest = path / 'release-manifest.json'
         manifest.chmod(0o640)
         manifest.write_bytes(manifest.read_bytes() + b' ')
-        runner = self.runner()
-        self.execute.reset_mock()
         with self.assertRaises(r.ActivationError):
-            runner.validate_offline(path, self.fixture.ctx.runtime_config, self.fixture.keys, '/', None)
+            r.stage(source, portable.A, self.root, self.fixture.keys)
         self.assertEqual(manifest.stat().st_mode & 0o777, 0o640)
-        self.execute.assert_not_called()
+
+    def test_container_startup_and_structured_diagnostics_are_bounded_and_sanitized(self):
+        path = self.fixture.stage()
+        runner = self.runner()
+        cases = [(125, '', 'Error: mount denied\x1b[31m\x07\nnext', 'mount denied'),
+                 (127, 'not json', 'binary not found', 'binary not found'),
+                 (0, '', '', 'no container output'),
+                 (2, json.dumps(dict(status='error', error={'reason': ['bad config']})), '', 'bad config'),
+                 (2, json.dumps(dict(status='error', error='bad\x1b\x07\n' + 'x' * 6000)), '', 'bad')]
+        for code, output, stderr, expected in cases:
+            with self.subTest(code=code, expected=expected):
+                self.execute.return_value = subprocess.CompletedProcess([], code, output, stderr)
+                with self.assertRaises(r.ActivationError) as error:
+                    runner.validate_offline(path, self.fixture.ctx.runtime_config, self.fixture.keys, '/', None)
+                message = str(error.exception)
+                self.assertIn('exit ' + str(code), message)
+                self.assertIn(expected, message)
+                self.assertLess(len(message), 4100)
+                self.assertFalse(any(ord(char) < 32 or ord(char) == 127 for char in message))
+                self.assertNotIn('image does not support', message)
+
+    def test_adapter_does_not_apply_prepare_entra_policy_to_lifecycle_validation(self):
+        path = self.fixture.stage()
+        runner = self.runner()
+        report = dict(status='ok', version=portable.A, capability=1,
+                      manifestDigest='a' * 64, runtimeConfigDigest='b' * 64)
+        self.execute.return_value = subprocess.CompletedProcess([], 0, json.dumps(report), '')
+        with patch.object(cli, 'check_runtime_configuration', side_effect=AssertionError('prepare-only policy')), \
+                patch.object(r, 'verify_signature', side_effect=AssertionError('duplicate signature verification')), \
+                patch.object(r, 'verify_tree', side_effect=AssertionError('duplicate tree verification')):
+            runner.validate_offline(path, self.fixture.ctx.runtime_config, self.fixture.keys, '/', None)
+
+    def test_staging_repairs_only_manifest_listed_public_files(self):
+        source = self.fixture.fixture()
+        path = r.stage(source, portable.A, self.root, self.fixture.keys)
+        path.chmod(0o750)
+        stray = path / '.private'
+        stray.write_text('retained private content')
+        stray.chmod(0o600)
+        for item in [path / 'dist', *list((path / 'dist').rglob('*')), path / 'release-manifest.json', path / 'release-manifest.sig']:
+            item.chmod(0o550 if item.is_dir() else 0o440)
+        r.stage(source, portable.A, self.root, self.fixture.keys)
+        for item in [path, path / 'dist', *list((path / 'dist').rglob('*')), path / 'release-manifest.json', path / 'release-manifest.sig']:
+            self.assertEqual(item.stat().st_mode & 0o777, 0o555 if item.is_dir() else 0o444)
+        self.assertEqual(stray.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(stray.read_text(), 'retained private content')
+
+    def test_signed_and_legacy_staging_ignore_restrictive_umask(self):
+        source = self.fixture.fixture()
+        archive = self.base / 'legacy.zip'
+        with zipfile.ZipFile(archive, 'w') as zipped:
+            zipped.writestr('dist/index.html', 'public legacy content')
+        previous = os.umask(0o077)
+        try:
+            path = r.stage(source, portable.A, self.root, self.fixture.keys)
+            legacy_root = self.base / 'legacy'
+            cli.legacy_dist(archive, legacy_root)
+        finally:
+            os.umask(previous)
+        for item in [path, *path.rglob('*')]:
+            self.assertEqual(item.stat().st_mode & 0o777, 0o555 if item.is_dir() else 0o444)
+        self.assertEqual((legacy_root / 'dist').stat().st_mode & 0o777, 0o755)
+        self.assertEqual((legacy_root / 'dist/index.html').stat().st_mode & 0o777, 0o644)
+        self.assertEqual(legacy_root.stat().st_mode & 0o111, 0o111)
 
     def test_readback_mandatory_head_get_and_failure_not_absent(self):
         opener = Mock()

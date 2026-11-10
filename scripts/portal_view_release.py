@@ -295,6 +295,22 @@ def leftover(path):
             'Confirm no staging is running, inspect it, remove it, then retry')
 
 
+def public_release_permissions(path, manifest):
+    """Repair only authenticated metadata, payload members and their directories."""
+    files = [regular(path / name) for name in ('release-manifest.json', 'release-manifest.sig')]
+    directories = {directory(path), directory(path / 'dist')}
+    for name in members(manifest):
+        item = regular(path / 'dist' / name)
+        files.append(item)
+        parent = item.parent
+        while parent != path:
+            directories.add(directory(parent))
+            parent = parent.parent
+    for item, mode in [(item, 0o444) for item in files] + [(item, 0o555) for item in directories]:
+        if stat.S_IMODE(item.stat().st_mode) != mode:
+            item.chmod(mode)
+
+
 def stage(source, version, root, key_dir, downloader=None):
     version, root = component(version), Path(root)
     if isinstance(source, Path):
@@ -315,9 +331,11 @@ def stage(source, version, root, key_dir, downloader=None):
             remote_download(source.rstrip('/') + '/' + name, destination)
     root.mkdir(parents=True, exist_ok=True)
     directory(root)
+    root.chmod(stat.S_IMODE(root.stat().st_mode) | 0o111)
     for part in ('releases', '.downloads'):
         (root / part).mkdir(exist_ok=True)
         directory(root / part)
+    (root / 'releases').chmod(0o755)
     downloaded = root / '.downloads' / version
     staging = root / 'releases' / (version + '.staging')
     owned_download = owned_stage = False
@@ -338,6 +356,7 @@ def stage(source, version, root, key_dir, downloader=None):
             verify_tree(existing, target / 'dist')
             require(digest((target / 'release-manifest.json').read_bytes()) == digest((downloaded / 'release-manifest.json').read_bytes()),
                     'release ' + version + ' already staged with different content')
+            public_release_permissions(target, existing)
             return target
         require(not os.path.lexists(staging), leftover(staging))
         staging.mkdir()
@@ -356,9 +375,9 @@ def stage(source, version, root, key_dir, downloader=None):
                 item = Path(parent) / name
                 with item.open('rb') as file:
                     os.fsync(file.fileno())
-                item.chmod(item.stat().st_mode & ~0o222)
+                item.chmod(0o444)
             fsync_dir(parent)
-            Path(parent).chmod(Path(parent).stat().st_mode & ~0o222)
+            Path(parent).chmod(0o555)
         os.replace(staging, target)
         owned_stage = False
         fsync_dir(target.parent)
