@@ -97,7 +97,22 @@ being switched globally when testing OAuth and SSO side by side.
    python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
    ```
 
-   For an unexplained process termination, enable flushed progress markers:
+   For an unexplained process termination, print every executed line in the CLI
+   and its shared release module (file and line number only, before execution):
+
+   ```bash
+   PORTAL_VIEW_TRACE=1 python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare 2>portal-view-trace.log
+   tail -n 30 portal-view-trace.log
+   ```
+
+   Each trace line is flushed immediately. The final file/line identifies the
+   last operation entered, which can include time spent in an imported module
+   or child process; it does not by itself prove that operation caused the kill.
+   Tracing starts after the small `sys`/`os` and hook setup at the top of the CLI.
+   If execution is terminated before that setup, no in-script trace can print.
+   Tracing is verbose and off by default; it prints no source text or variables.
+
+   For shorter output, enable flushed progress markers instead:
 
    ```bash
    PORTAL_VIEW_DEBUG=1 python3 -B scripts/portal-view-release.py --help

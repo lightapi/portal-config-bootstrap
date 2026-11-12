@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 
 CLI = Path(__file__).resolve().with_name('portal-view-release.py')
@@ -61,3 +62,36 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         result = self.command(['-c', code, str(CLI)], True)
         self.assertEqual(result.returncode, 86, result.stderr)
         self.assertRegex(result.stderr, r'^PORTAL_VIEW_DEBUG: pid=[0-9]+ startup.before-imports\n$')
+
+    def test_line_trace_reports_script_lines_without_source_or_values(self):
+        with patch.dict(os.environ, {'PORTAL_VIEW_TRACE': '1'}):
+            result = self.command([str(CLI), '--help'], False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stderr.splitlines()
+        self.assertGreater(len(lines), 20)
+        for line in lines:
+            self.assertRegex(line, r'^PORTAL_VIEW_TRACE: pid=[0-9]+ portal[-_]view[-_]release\.py:[0-9]+$')
+        source = CLI.read_text().splitlines()
+        import_line = source.index('import argparse') + 1
+        self.assertTrue(any(line.endswith('portal-view-release.py:' + str(import_line)) for line in lines))
+        self.assertTrue(any('portal_view_release.py:' in line for line in lines))
+        self.assertNotIn('do-not-print-this-value', result.stdout + result.stderr)
+        self.assertNotIn('import argparse', result.stderr)
+
+    def test_line_trace_survives_abrupt_exit_on_the_reported_line(self):
+        code = '''import builtins, os, runpy, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+original = builtins.__import__
+def importing(name, *args, **kwargs):
+    if name == 'argparse':
+        os._exit(86)
+    return original(name, *args, **kwargs)
+builtins.__import__ = importing
+runpy.run_path(sys.argv[1], run_name='__main__')
+'''
+        with patch.dict(os.environ, {'PORTAL_VIEW_TRACE': '1'}):
+            result = self.command(['-c', code, str(CLI)], False)
+        self.assertEqual(result.returncode, 86, result.stderr)
+        import_line = CLI.read_text().splitlines().index('import argparse') + 1
+        self.assertTrue(result.stderr.splitlines()[-1].endswith('portal-view-release.py:' + str(import_line)))

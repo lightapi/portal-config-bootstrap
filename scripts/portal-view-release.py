@@ -4,6 +4,22 @@ import sys
 import os
 
 
+def trace_line(frame, event, arg):
+    """Print each executed release-script line before it runs, without values."""
+    name = frame.f_code.co_filename.replace('\\', '/').rsplit('/', 1)[-1]
+    if name not in ('portal-view-release.py', 'portal_view_release.py'):
+        return None
+    if event == 'line':
+        print('PORTAL_VIEW_TRACE: pid=' + str(os.getpid()) + ' '
+              + name + ':' + str(frame.f_lineno), file=sys.stderr, flush=True)
+    return trace_line
+
+
+if __name__ == '__main__' and os.environ.get('PORTAL_VIEW_TRACE') == '1':
+    sys.settrace(trace_line)
+    sys._getframe().f_trace = trace_line
+
+
 def diagnostic(event):
     """Only fixed milestone names, never config, command arguments or environment."""
     if os.environ.get('PORTAL_VIEW_DEBUG') == '1':
