@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   downloads:
-    runs-on: ubuntu-latest
+    # Python 3.9 is required by bootstrap hosts and unavailable on Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
