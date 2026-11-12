@@ -97,6 +97,35 @@ being switched globally when testing OAuth and SSO side by side.
    python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
    ```
 
+   For an unexplained process termination, start with the read-only help command:
+
+   ```bash
+   PORTAL_VIEW_TRACE=1 python3 -B scripts/portal-view-release.py --help 2>portal-view-trace.log
+   result=$?
+   echo "exit=$result"
+   grep '^PORTAL_VIEW_TRACE:' portal-view-trace.log | tail -n 30
+   ```
+
+   This opt-in trace prints a PID, filename and line number before each executed
+   line in the CLI and shared release module. Each line is written immediately;
+   a closed or broken trace destination disables tracing instead of aborting the
+   command. Unrelated Python frames are rejected by fixed filename lookups.
+   Module imports stay silent and tracing is off by default.
+
+   Only `PORTAL_VIEW_TRACE:` lines omit source text and variable values. The log
+   also contains normal stderr, which may include URLs, commands or error details;
+   review it before sharing. The final trace location identifies the last operation
+   entered, not the process responsible for a kill. Exit 137 is consistent with
+   SIGKILL, but does not establish when or why it occurred. No in-script output is
+   possible before Python reaches the tracing setup (after `sys`/`os` imports).
+
+   Use `prepare` with tracing only after the help test and when intending to
+   prepare a release: it downloads, stages, may pull an image, and can set the
+   first-release pointer. For termination outside Python, ask the administrator
+   to correlate process/security audit and kernel logs. An approved `strace` run
+   can establish the last syscall and signal; it cannot always identify the killer
+   and may capture sensitive process arguments, so review its output privately.
+
    Signed staging publishes verified browser assets with directories `0555` and
    files `0444`, independently of the host umask. Re-staging repairs those known
    public paths in existing releases; unrelated entries are not changed. Legacy

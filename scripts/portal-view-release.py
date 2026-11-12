@@ -1,17 +1,46 @@
 #!/usr/bin/env python3
 """Repository signed release command. Importing this module performs no effects."""
+import sys
+import os
+
+
+def start_line_trace():
+    """Temporary opt-in tracing; output failures disable tracing, not the CLI."""
+    filename = os.path.abspath(__file__)
+    names = {__file__: 'portal-view-release.py', filename: 'portal-view-release.py',
+             os.path.join(os.path.dirname(filename), 'portal_view_release.py'): 'portal_view_release.py'}
+    prefix = 'PORTAL_VIEW_TRACE: pid=' + str(os.getpid()) + ' '
+
+    def trace_line(frame, event, arg):
+        name = names.get(frame.f_code.co_filename)
+        if name is None:
+            return None
+        if event == 'line':
+            try:
+                # No Python buffering or stderr object to flush at shutdown.
+                os.write(2, (prefix + name + ':' + str(frame.f_lineno) + '\n').encode('ascii'))
+            except OSError:
+                sys.settrace(None)
+                return None
+        return trace_line
+
+    sys.settrace(trace_line)
+    sys._getframe(1).f_trace = trace_line
+
+
+if __name__ == '__main__' and os.environ.get('PORTAL_VIEW_TRACE') == '1':
+    start_line_trace()
+
 import argparse
 import contextlib
 import unicodedata
 import http.client
 import json
-import os
 from pathlib import Path
 import re
 import shlex
 import ssl
 import subprocess
-import sys
 import shutil
 import stat
 import tempfile
