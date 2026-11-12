@@ -97,35 +97,34 @@ being switched globally when testing OAuth and SSO side by side.
    python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
    ```
 
-   For an unexplained process termination, print every executed line in the CLI
-   and its shared release module (file and line number only, before execution):
+   For an unexplained process termination, start with the read-only help command:
 
    ```bash
-   PORTAL_VIEW_TRACE=1 python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare 2>portal-view-trace.log
-   tail -n 30 portal-view-trace.log
+   PORTAL_VIEW_TRACE=1 python3 -B scripts/portal-view-release.py --help 2>portal-view-trace.log
+   result=$?
+   echo "exit=$result"
+   grep '^PORTAL_VIEW_TRACE:' portal-view-trace.log | tail -n 30
    ```
 
-   Each trace line is flushed immediately. The final file/line identifies the
-   last operation entered, which can include time spent in an imported module
-   or child process; it does not by itself prove that operation caused the kill.
-   Tracing starts after the small `sys`/`os` and hook setup at the top of the CLI.
-   If execution is terminated before that setup, no in-script trace can print.
-   Tracing is verbose and off by default; it prints no source text or variables.
+   This opt-in trace prints a PID, filename and line number before each executed
+   line in the CLI and shared release module. Each line is written immediately;
+   a closed or broken trace destination disables tracing instead of aborting the
+   command. Unrelated Python frames are rejected by fixed filename lookups.
+   Module imports stay silent and tracing is off by default.
 
-   For shorter output, enable flushed progress markers instead:
+   Only `PORTAL_VIEW_TRACE:` lines omit source text and variable values. The log
+   also contains normal stderr, which may include URLs, commands or error details;
+   review it before sharing. The final trace location identifies the last operation
+   entered, not the process responsible for a kill. Exit 137 is consistent with
+   SIGKILL, but does not establish when or why it occurred. No in-script output is
+   possible before Python reaches the tracing setup (after `sys`/`os` imports).
 
-   ```bash
-   PORTAL_VIEW_DEBUG=1 python3 -B scripts/portal-view-release.py --help
-   PORTAL_VIEW_DEBUG=1 python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
-   ```
-
-   Markers go to stderr and contain only a PID and fixed milestone names, never
-   configuration values, credentials, URLs or subprocess arguments. Share the
-   last marker with the Linux administrator. If `startup.before-imports` never
-   appears, execution did not reach that marker (after importing `sys` and `os`);
-   this alone does not identify which process or policy caused the termination.
-   `--help` normally ends after `arguments.parse.begin`, because argparse exits
-   after printing help. Diagnostics are off by default and module imports stay silent.
+   Use `prepare` with tracing only after the help test and when intending to
+   prepare a release: it downloads, stages, may pull an image, and can set the
+   first-release pointer. For termination outside Python, ask the administrator
+   to correlate process/security audit and kernel logs. An approved `strace` run
+   can establish the last syscall and signal; it cannot always identify the killer
+   and may capture sensitive process arguments, so review its output privately.
 
    Signed staging publishes verified browser assets with directories `0555` and
    files `0444`, independently of the host umask. Re-staging repairs those known
