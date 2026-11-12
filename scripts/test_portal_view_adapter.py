@@ -385,6 +385,20 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(r.ActivationError, re.escape('offline validation failed (exit 2): ' + error)):
             runner.validate_offline(path, self.fixture.ctx.runtime_config, self.fixture.keys, '/', None)
 
+    def test_prepare_diagnostics_report_milestones_without_values(self):
+        self.serve()
+        output, errors = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {'PORTAL_VIEW_DEBUG': '1', 'PRIVATE_SENTINEL': 'do-not-print'}), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            cli.prepare('2.6.0', 'https://cdn.example/releases', self.factory, self.transport)
+        events = [line.rsplit(' ', 1)[1] for line in errors.getvalue().splitlines()
+                  if line.startswith('PORTAL_VIEW_DEBUG:')]
+        self.assertEqual(events, [name for phase in ('config', 'metadata', 'state', 'stage',
+                                                     'image-env', 'compose', 'image', 'offline')
+                                  for name in ('prepare.' + phase + '.begin', 'prepare.' + phase + '.complete')])
+        self.assertNotIn('do-not-print', errors.getvalue())
+        self.assertNotIn('cdn.example', errors.getvalue())
+
     def test_entra_placeholders_fail_before_download_or_container_work(self):
         valid = dict(mode='entra-sso', tenantId='12345678-abcd-1234-abcd-123456789abc',
                      clientId='87654321-abcd-1234-abcd-123456789abc')

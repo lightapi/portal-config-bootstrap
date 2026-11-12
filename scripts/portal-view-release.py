@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
 """Repository signed release command. Importing this module performs no effects."""
+import sys
+import os
+
+
+def diagnostic(event):
+    """Only fixed milestone names, never config, command arguments or environment."""
+    if os.environ.get('PORTAL_VIEW_DEBUG') == '1':
+        print('PORTAL_VIEW_DEBUG: pid=' + str(os.getpid()) + ' ' + event,
+              file=sys.stderr, flush=True)
+
+
+if __name__ == '__main__':
+    diagnostic('startup.before-imports')
+
 import argparse
 import contextlib
 import unicodedata
 import http.client
 import json
-import os
 from pathlib import Path
 import re
 import shlex
 import ssl
 import subprocess
-import sys
 import shutil
 import stat
 import tempfile
@@ -21,6 +33,9 @@ import urllib.parse
 import urllib.request
 
 import portal_view_release as release
+
+if __name__ == '__main__':
+    diagnostic('startup.after-imports')
 
 BASE = Path(__file__).resolve().parents[1]
 ROOT = BASE / 'light-gateway-rust/lightapi'
@@ -233,7 +248,9 @@ class RealRunner:
         self.run(['docker', 'image', 'inspect', self.image])
 
     def validate_offline(self, release_dir, runtime_config, key_dir, mount_path, handler_config):
+        diagnostic('validation.snapshot.begin')
         with validation_snapshot(release_dir, runtime_config, key_dir, handler_config) as snapshot:
+            diagnostic('validation.snapshot.complete')
             # Relabel only disposable copies, never the live serving mount.
             args = ['docker', 'run', '--rm', '--network', 'none', '--pull', 'never',
                     '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
@@ -244,7 +261,10 @@ class RealRunner:
                     '--key-dir', '/inputs/keys', '--mount-path', mount_path]
             if handler_config is not None:
                 args += ['--handler-config', '/inputs/runtime/handler.yml']
+            diagnostic('validation.container.begin')
             result = self.run(args, check=False)
+            diagnostic('validation.container.complete')
+        diagnostic('validation.snapshot.cleaned')
         try:
             report = json.loads(result.stdout)
         except (ValueError, TypeError) as error:
@@ -485,9 +505,12 @@ def image_env(enclosing, release_base=None, opener=None):
 def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None):
     """Resolve and prepare a verified signed package; missing publication fails closed."""
     release.component(enclosing)
+    diagnostic('prepare.config.begin')
     check_runtime_configuration(CONFIG / 'portal-config.json')
+    diagnostic('prepare.config.complete')
     base = configured_release_base(release_base)
     transport = opener if opener is not None else release.download_opener(NoRedirect())
+    diagnostic('prepare.metadata.begin')
     try:
         source = resolve_source(base, enclosing, transport)
         with transport.open(source + '/portal-view-release.env', timeout=60) as response:
@@ -498,6 +521,8 @@ def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None
             raise release.ActivationError('signed release metadata download failed: HTTP ' + str(error.code)) from error
         raise release.ActivationError('signed Portal View release not published for ' + enclosing
                                       + '; publication is required before preparation') from error
+    diagnostic('prepare.metadata.complete')
+    diagnostic('prepare.state.begin')
     ROOT.mkdir(parents=True, exist_ok=True)
     with release.locked(ROOT):
         release.consistent(ROOT)  # Refuse a retained journal before any download.
@@ -505,19 +530,30 @@ def prepare(enclosing, release_base=None, runner_factory=RealRunner, opener=None
         with transport.open(url, timeout=60) as response, destination.open('xb') as output:
             release.require(response.status == 200, 'signed release member download failed')
             shutil.copyfileobj(response, output)
+    diagnostic('prepare.state.complete')
+    diagnostic('prepare.stage.begin')
     release.stage(source, version, ROOT, CONFIG / 'portal-view-release-keys', downloader=download)
+    diagnostic('prepare.stage.complete')
     try:
+        diagnostic('prepare.image-env.begin')
         if MODE == 'bootstrap':
             ensure_image_env(source, transport)
+        diagnostic('prepare.image-env.complete')
+        diagnostic('prepare.compose.begin')
         real = runner_factory(None)
+        diagnostic('prepare.compose.complete')
+        diagnostic('prepare.image.begin')
         real.ensure_image()
+        diagnostic('prepare.image.complete')
     except Exception:
         print('PORTAL_VIEW_RELEASE: verified staged ' + version + '; not prepared; current/state/journal unchanged', file=sys.stderr)
         raise
     ctx = release.Context(release.Runner(real.validate_offline, real.recreate_gateways, real.read_release_digest, real.gateway_healthy),
                           CONFIG / 'portal-config.json', CONFIG / 'portal-view-release-keys')
     ctx.recreate_command = real.recreate_command
+    diagnostic('prepare.offline.begin')
     outcome, active = release.prepare(version, ROOT, ctx)
+    diagnostic('prepare.offline.complete')
     if outcome == 'prepared':
         print('PORTAL_VIEW_RELEASE: prepared ' + version + '; serving cutover remains an owner action')
     elif outcome == 'unchanged':
@@ -620,10 +656,15 @@ def select_sso():
 
 
 def main(argv=None, runner_factory=RealRunner):
+    diagnostic('main.enter')
     try:
+        diagnostic('arguments.parse.begin')
         args = parser().parse_args(argv)
+        diagnostic('arguments.parse.complete')
+        diagnostic('service.select.begin')
         if args.service == 'portal-bff-sso':
             select_sso()
+        diagnostic('service.select.complete')
         if args.command == 'image-env':
             image_env(args.enclosing_version, args.release_base)
         elif args.command == 'prepare':
@@ -671,4 +712,5 @@ def main(argv=None, runner_factory=RealRunner):
 
 
 if __name__ == '__main__':
+    diagnostic('startup.before-main')
     sys.exit(main())

@@ -97,6 +97,21 @@ being switched globally when testing OAuth and SSO side by side.
    python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
    ```
 
+   For an unexplained process termination, enable flushed progress markers:
+
+   ```bash
+   PORTAL_VIEW_DEBUG=1 python3 -B scripts/portal-view-release.py --help
+   PORTAL_VIEW_DEBUG=1 python3 -B scripts/portal-view-release.py --service portal-bff-sso prepare
+   ```
+
+   Markers go to stderr and contain only a PID and fixed milestone names, never
+   configuration values, credentials, URLs or subprocess arguments. Share the
+   last marker with the Linux administrator. If `startup.before-imports` never
+   appears, execution did not reach that marker (after importing `sys` and `os`);
+   this alone does not identify which process or policy caused the termination.
+   `--help` normally ends after `arguments.parse.begin`, because argparse exits
+   after printing help. Diagnostics are off by default and module imports stay silent.
+
    Signed staging publishes verified browser assets with directories `0555` and
    files `0444`, independently of the host umask. Re-staging repairs those known
    public paths in existing releases; unrelated entries are not changed. Legacy
