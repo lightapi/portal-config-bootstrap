@@ -99,6 +99,9 @@ being switched globally when testing OAuth and SSO side by side.
 
    For an unexplained process termination, start with the read-only help command:
 
+   See the [RHEL process-kill troubleshooting guide](docs/portal-view-process-killed.md)
+   for the complete target-server procedure and administrator evidence checklist.
+
    ```bash
    PORTAL_VIEW_TRACE=1 python3 -B scripts/portal-view-release.py --help 2>portal-view-trace.log
    result=$?
