@@ -98,6 +98,57 @@ nl -ba scripts/portal-view-release.py | sed -n '115,125p'
 
 Use `scripts/portal_view_release.py` instead if that is the traced filename.
 
+## Investigate a trace that stops during imports
+
+In the diagnostics version merged in PR #28, the target server reported
+`prepare.log` stopping at line 37 and `help.log` stopping at line 43:
+
+| CLI line | Statement entered |
+| --- | --- |
+| 37 | `import http.client` |
+| 43 | `import subprocess` |
+
+Confirm these mappings against the target checkout; later edits can move lines:
+
+```bash
+nl -ba scripts/portal-view-release.py | sed -n '31,45p'
+```
+
+Both statements run before argument parsing and preparation. The differing stop
+points do not establish that either module is faulty or that a security agent is
+responsible. Imports can load other Python modules and native extensions, whose
+internals are not shown by the release-script line tracer.
+
+Collect Python's verbose import output using **help only**, in the same shell
+where `trace_dir` was created above:
+
+```bash
+date -Is
+result=0
+PORTAL_VIEW_TRACE=1 python3 -B -v scripts/portal-view-release.py \
+  --help 2>"$trace_dir/imports.log" || result=$?
+echo "verbose help exit=$result"
+tail -n 50 "$trace_dir/imports.log"
+```
+
+Review the final import messages locally before sharing them. This log mixes
+Python import diagnostics, trace records and normal stderr; it can contain
+installation paths and error details. Provide the reviewed final lines, exit
+status, timestamp and checkout commit to the administrator. The last message
+narrows the loading activity observed, but still does not identify the killer.
+
+As a separate, read-only check for the line 37 import, run:
+
+```bash
+result=0
+python3 -B -c 'print("Before http.client", flush=True); import http.client; print("Import succeeded", flush=True)' \
+  2>"$trace_dir/http-client.log" || result=$?
+echo "standalone import exit=$result"
+```
+
+If this succeeds while direct CLI help is killed, record that contrast without
+concluding that the import itself or a particular security rule caused the kill.
+
 ## Trace preparation only when intended
 
 If help works, and you intend to prepare the release, run:
